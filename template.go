@@ -98,6 +98,23 @@ const maxDepth = 256
 // A document whose XML does not close is refused. Half a template is not a
 // form, and laying one out would put half a form on paper without saying so.
 func ParseTemplate(r io.Reader) (*Node, error) {
+	root, err := parseXML(r)
+	if err != nil {
+		return nil, fmt.Errorf("xfa: reading the template: %w", err)
+	}
+	if root.Kind != "template" {
+		return nil, fmt.Errorf("xfa: this is a <%s>, not a template", root.Kind)
+	}
+	return root, nil
+}
+
+// parseXML reads one part of an XFA package into a tree. Both parts are XML of
+// the same shape, so both are read the same way; what distinguishes them is
+// what the caller then expects at the root.
+//
+// Its errors carry no package prefix. The caller knows which part it asked
+// for and says so, which is the half a reader of the message needs.
+func parseXML(r io.Reader) (*Node, error) {
 	dec := xml.NewDecoder(r)
 	// A template may name entities the reader does not carry; treating an
 	// unknown one as itself keeps a form readable rather than refusing it over
@@ -113,12 +130,12 @@ func ParseTemplate(r io.Reader) (*Node, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("xfa: reading the template: %w", err)
+			return nil, err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			if len(stack) >= maxDepth {
-				return nil, fmt.Errorf("xfa: the template nests deeper than %d elements", maxDepth)
+				return nil, fmt.Errorf("it nests deeper than %d elements", maxDepth)
 			}
 			n := &Node{Kind: t.Name.Local, Attr: map[string]string{}}
 			for _, a := range t.Attr {
@@ -129,7 +146,7 @@ func ParseTemplate(r io.Reader) (*Node, error) {
 			}
 			if len(stack) == 0 {
 				if root != nil {
-					return nil, fmt.Errorf("xfa: the template has more than one root")
+					return nil, fmt.Errorf("there is more than one root")
 				}
 				root = n
 			} else {
@@ -162,10 +179,7 @@ func ParseTemplate(r io.Reader) (*Node, error) {
 	// open is an unexpected EOF, which the reader reports above, and a
 	// mismatched close pops what is open rather than leaving it.
 	if root == nil {
-		return nil, fmt.Errorf("xfa: there is no template here")
-	}
-	if root.Kind != "template" {
-		return nil, fmt.Errorf("xfa: this is a <%s>, not a template", root.Kind)
+		return nil, fmt.Errorf("there is nothing here")
 	}
 	return root, nil
 }

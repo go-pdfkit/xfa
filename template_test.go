@@ -122,7 +122,7 @@ func TestHalfATemplateIsRefused(t *testing.T) {
 		{"it closes what it never opened", `</template>`, "reading the template"},
 		{"there is more than one", `<template/><template/>`, "more than one root"},
 		{"it is not a template", `<config/>`, "not a template"},
-		{"there is nothing there", ``, "no template here"},
+		{"there is nothing there", ``, "there is nothing here"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ParseTemplate(strings.NewReader(tc.src))
