@@ -119,3 +119,90 @@ func readTheData(t *testing.T, dir string) {
 			filepath.Base(stem), len(fields), len(values), same)
 	}
 }
+
+// TestBindingOverTheCorpus joins every template it can find to the datasets
+// beside it and counts what came of it. Like the reader above it is skipped
+// unless a corpus is named.
+//
+//	XFACORPUS=/path/to/parts go test -run BindingOverTheCorpus -v
+func TestBindingOverTheCorpus(t *testing.T) {
+	dir := os.Getenv("XFACORPUS")
+	if dir == "" {
+		t.Skip("no XFACORPUS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+
+	var forms, parsed, withData, fields, bound, nonEmpty, truncated int
+	why := map[string]int{}
+	unsupported := 0
+	matches := map[string]int{}
+	binds := 0
+	perForm := map[string]int{}
+	for _, name := range names {
+		forms++
+		tmpl := readNode(t, name, true)
+		if tmpl == nil {
+			continue
+		}
+		parsed++
+		tmpl.Walk(func(n *Node) {
+			if n.Kind == "bind" {
+				binds++
+				matches[matchOf(n)]++
+			}
+		})
+		stem := strings.TrimSuffix(name, ".template.xml")
+		data := readNode(t, stem+".datasets.xml", false)
+		if data != nil && len(data.Kids) > 0 {
+			withData++
+		}
+		r := Bind(tmpl, data)
+		fields += len(r.Fields)
+		perForm[filepath.Base(stem)] = len(r.Fields)
+		for _, f := range r.Fields {
+			if f.Bound {
+				bound++
+			}
+			if f.Value != "" {
+				nonEmpty++
+			}
+		}
+		unsupported += len(r.Unsupported)
+		for _, u := range r.Unsupported {
+			why[u.Why]++
+		}
+		if r.Truncated {
+			truncated++
+		}
+	}
+	t.Logf("%d templates, %d parsed, %d with a non-empty data tree", forms, parsed, withData)
+	t.Logf("%d <bind> elements: %v", binds, matches)
+	t.Logf("%d fields bound out of %d placed, %d carry a value", bound, fields, nonEmpty)
+	t.Logf("%d unsupported constructs: %v", unsupported, why)
+	t.Logf("%d forms truncated", truncated)
+}
+
+// readNode reads one part, reporting a failure to parse rather than stopping.
+func readNode(t *testing.T, name string, isTemplate bool) *Node {
+	t.Helper()
+	f, err := os.Open(name)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var n *Node
+	if isTemplate {
+		n, err = ParseTemplate(f)
+	} else {
+		n, err = ParseDatasets(f)
+	}
+	if err != nil {
+		t.Logf("%s: %v", filepath.Base(name), err)
+		return nil
+	}
+	return n
+}
