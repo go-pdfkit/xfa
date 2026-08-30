@@ -31,25 +31,38 @@
 // FormCalc, XFA's other scripting language, is not read either: every script
 // in the corpus declares itself as JavaScript.
 //
-// # What is not built yet, and how it is known to be needed
+// # Joining a field to its value
 //
-// A field is not joined to its value here, and that is measured rather than
-// deferred out of laziness. A form binds its fields to its data explicitly,
-// through <bind> elements — one form in the corpus carries 222 of them — and
-// the template's path to a field need not be the data's path to its value.
+// [Bind] does that, and it is not a matter of matching names. A form binds its
+// fields to its data explicitly, through <bind> elements — 26 573 of them
+// across the 560 XFA packages in the corpus — and where it does not, each
+// container consumes the next unclaimed data node of its own name, in document
+// order. The two trees are named differently on purpose: the template names a
+// field for the layout and the data names it for the record.
 //
-// Taking the fourteen forms and asking how many template paths the data
-// happens to answer:
+// Taking the fourteen dynamic forms and asking how many template paths the
+// data happens to answer:
 //
 //	cerfa_12064      212 fields, 212 values,  0 paths in common
 //	t657-fill-25e    459 fields, 459 values,  0 paths in common
 //	cerfa_12818       72 fields,  51 values, 47 paths in common
 //	CA-27_sample     136 fields,  99 values, 69 paths in common
 //
-// The same count of each and not one path in common is what settles it: two
-// of these forms name every field twice over, once for the layout and once for
-// the data, and only <bind> says which goes with which. Guessing by name would
-// answer confidently and wrongly, which is worse than not answering — so
-// [Values] hands back what the data says, [FieldNames] what the template says,
-// and nothing here pretends to join them.
+// The same count of each and not one path in common is what settles it: two of
+// these forms name every field twice over, and only the binding says which
+// goes with which. Guessing by name would answer confidently and wrongly.
+//
+// Measured over all 560 packages:
+//
+//	560 templates read, 560 with a data tree
+//	26 573 <bind> elements: 11 875 match="none"
+//	                        11 544 match="global"
+//	                         2 589 with no match, which means "once"
+//	                           565 match="dataRef", every one with a ref
+//	80 482 fields placed, 60 865 of them bound to a data node
+//	     0 <bind> expressions holding a construct this does not read
+//
+// [Values] and [FieldNames] remain what they were — what the data says, and
+// what the template says, each on its own — for a caller that wants one side
+// without the other.
 package xfa

@@ -98,10 +98,10 @@ func Value(data *Node, path string) (string, bool) {
 // The path is the template's, and it is NOT necessarily the path the data
 // uses. XFA binds a field to its data explicitly, through <bind> elements —
 // one real form here carries 222 of them — and a form may name its root
-// subform one thing while its data calls it another. Joining these paths to
-// the ones [Values] returns is right for a form that binds implicitly and
-// wrong for one that does not, which is why this package does not do it: see
-// the note in the package documentation about what is not built yet.
+// subform one thing while its data calls it another. Joining the two by path
+// is right for a form that binds implicitly and wrong for one that does not,
+// which is why this does not try: [Bind] does the joining properly, and hands
+// back each field with the value actually bound to it.
 //
 // Fields are looked for inside page areas as well as inside subforms. That is
 // not a nicety: of the 212 fields in one real form, every one sits under a
