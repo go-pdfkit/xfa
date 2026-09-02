@@ -206,3 +206,55 @@ func readNode(t *testing.T, name string, isTemplate bool) *Node {
 	}
 	return n
 }
+
+// TestNoValueIsLostOverTheCorpus counts what the data carries and what
+// [Values] hands back, and requires them to be the same number. Skipped
+// unless a corpus is named.
+//
+//	XFACORPUS=/path/to/parts go test -run NoValueIsLost -v
+//
+// Counting is the whole test. A path scheme that collides does not fail, it
+// returns a smaller map, and the only way to see that from outside is to know
+// how many values went in. Before the repeats were numbered, 10 125 of the
+// 71 346 values the 560 packages carry never came back, across 216 forms.
+func TestNoValueIsLostOverTheCorpus(t *testing.T) {
+	dir := os.Getenv("XFACORPUS")
+	if dir == "" {
+		t.Skip("no XFACORPUS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.datasets.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no datasets in %s", dir)
+	}
+	sort.Strings(names)
+	var carried, returned, losing int
+	for _, name := range names {
+		data := readNode(t, name, false)
+		if data == nil {
+			continue
+		}
+		n, got := countValues(data), len(Values(data))
+		carried += n
+		returned += got
+		if n != got {
+			losing++
+			t.Errorf("%s: %d values carried, %d returned", filepath.Base(name), n, got)
+		}
+	}
+	t.Logf("%d datasets: %d values carried, %d returned, %d lost across %d forms",
+		len(names), carried, returned, carried-returned, losing)
+}
+
+// countValues is how many values the data actually carries: one for every leaf
+// and one for every group that holds text of its own, which is exactly the set
+// [Values] is meant to hand back.
+func countValues(n *Node) int {
+	c := 0
+	for _, k := range n.Kids {
+		if len(k.Kids) == 0 || k.Text != "" {
+			c++
+		}
+		c += countValues(k)
+	}
+	return c
+}

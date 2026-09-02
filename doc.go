@@ -43,9 +43,9 @@
 // Taking the fourteen dynamic forms and asking how many template paths the
 // data happens to answer:
 //
-//	cerfa_12064      212 fields, 212 values,  0 paths in common
+//	cerfa_12064      212 fields, 220 values,  0 paths in common
 //	t657-fill-25e    459 fields, 459 values,  0 paths in common
-//	cerfa_12818       72 fields,  51 values, 47 paths in common
+//	cerfa_12818       72 fields,  72 values, 47 paths in common
 //	CA-27_sample     136 fields,  99 values, 69 paths in common
 //
 // The same count of each and not one path in common is what settles it: two of
@@ -64,5 +64,7 @@
 //
 // [Values] and [FieldNames] remain what they were — what the data says, and
 // what the template says, each on its own — for a caller that wants one side
-// without the other.
+// without the other. [Values] names a repeated sibling the way a binding does,
+// "Row[1]", because a form's table is repeated siblings and naming them alike
+// was losing 10 125 of the corpus's 71 346 values.
 package xfa
