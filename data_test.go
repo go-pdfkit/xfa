@@ -131,3 +131,111 @@ func TestFieldsInsideTheContainersThatHoldThem(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+func TestRepeatedSiblingsAreNumberedAtEveryDepth(t *testing.T) {
+	// A repeating subform carries a table, and a table repeats at more than
+	// one depth: rows within a table, cells within a row, and the table itself
+	// where a form holds two of them. Naming them without an index collides
+	// them, and every one but the last is gone with nothing to say it was ever
+	// there — 10 125 values across the corpus.
+	data, err := ParseDatasets(strings.NewReader(
+		`<datasets><data><form1>` +
+			`<Table><Row><Cell>a</Cell><Cell>b</Cell></Row>` +
+			`<Row><Cell>c</Cell><Cell>d</Cell></Row>` +
+			`<Row><Cell>e</Cell></Row></Table>` +
+			`<Table><Row><Cell>f</Cell></Row></Table>` +
+			`</form1></data></datasets>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Values(data)
+	// The indices count from zero and the first of a name goes unindexed,
+	// which is how a SOM expression addresses a repeat and how Bind writes a
+	// DataPath.
+	want := map[string]string{
+		"form1.Table.Row.Cell":       "a",
+		"form1.Table.Row.Cell[1]":    "b",
+		"form1.Table.Row[1].Cell":    "c",
+		"form1.Table.Row[1].Cell[1]": "d",
+		"form1.Table.Row[2].Cell":    "e",
+		"form1.Table[1].Row.Cell":    "f",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if v, ok := Value(data, "form1.Table.Row[1].Cell[1]"); !ok || v != "d" {
+		t.Errorf("Value = %q, %v", v, ok)
+	}
+}
+
+func TestRepeatedRecordsAtTheRootAreKept(t *testing.T) {
+	// The root of the data tree is numbered too: a package may hold more than
+	// one record, and they are siblings like any other.
+	data, err := ParseDatasets(strings.NewReader(
+		`<datasets><data><r>one</r><r>two</r><r>three</r></data></datasets>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"r": "one", "r[1]": "two", "r[2]": "three"}
+	if got := Values(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestANameThatCarriesAPathsOwnPunctuation(t *testing.T) {
+	// Numbering the siblings cannot help when a name holds the punctuation a
+	// path is built from: <A.B> reaches the path <A><B> has taken, and a name
+	// attribute may be written with an index in it. Neither is a reason to
+	// drop the value, so the later one moves along.
+	for _, tc := range []struct {
+		name, src string
+		want      map[string]string
+	}{
+		{"a dot inside an element name",
+			`<A><B>x</B></A><A.B>y</A.B>`,
+			map[string]string{"A.B": "x", "A.B[1]": "y"}},
+		{"an index inside a name attribute",
+			`<A>one</A><A>two</A><item name="A[1]">three</item>`,
+			map[string]string{"A": "one", "A[1]": "two", "A[1][1]": "three"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := ParseDatasets(strings.NewReader(
+				`<datasets><data>` + tc.src + `</data></datasets>`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Values(data); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValuesAgreeWithTheBindersDataPaths(t *testing.T) {
+	// The two halves of the package name a data node the same way. A caller
+	// holding a Binding can look its neighbours up in Values without
+	// translating, which is the whole point of borrowing the binder's scheme.
+	data, err := ParseDatasets(strings.NewReader(
+		`<datasets><data><form1><Row><C>a</C></Row><Row><C>b</C></Row></form1></data></datasets>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := parse(t, `<template><subform name="form1">`+
+		`<subform name="Row"><field name="C"/></subform>`+
+		`<subform name="Row"><field name="C"/></subform>`+
+		`</subform></template>`)
+	values := Values(data)
+	seen := 0
+	for _, f := range Bind(tmpl, data).Fields {
+		if !f.Bound {
+			continue
+		}
+		seen++
+		if v, ok := values[f.DataPath]; !ok || v != f.Value {
+			t.Errorf("%s: Values has %q, %v; the binding says %q", f.DataPath, v, ok, f.Value)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("%d fields bound, want 2", seen)
+	}
+}
