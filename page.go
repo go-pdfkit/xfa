@@ -427,3 +427,134 @@ func namedKid(n *FormNode, name string) (*FormNode, int) {
 	}
 	return nil, -1
 }
+
+// A breakSpec is a <breakBefore> or a <breakAfter>, or the deprecated <break>
+// written as one.
+//
+// pdf.js does the same rewriting at the top of Subform[$toHTML]
+// (template.js:4980-5017): a <break> becomes a BreakBefore and a BreakAfter,
+// APPENDED to the arrays, so a subform carrying both keeps its own element as
+// the one that fires. <break before="pageEven"> and "pageOdd" have no place in
+// the option list a breakBefore's targetType is read from, so they become
+// "auto" and do nothing — which is pdf.js's own answer for them, and this
+// package's, rather than a rule invented here.
+type breakSpec struct {
+	targetType string
+	target     string
+	startNew   bool
+}
+
+// breakBeforeOf and breakAfterOf are the break that fires as a container is
+// reached, and the one that fires once it has been laid out.
+func breakBeforeOf(n *FormNode) (breakSpec, bool) {
+	if b := n.Template.Child("breakBefore"); b != nil {
+		return breakSpec{targetTypeOf(b.Get("targetType")), b.Get("target"), b.Get("startNew") == "1"}, true
+	}
+	if b := n.Template.Child("break"); b != nil {
+		if b.Get("before") != "" || b.Get("beforeTarget") != "" {
+			return breakSpec{targetTypeOf(b.Get("before")), b.Get("beforeTarget"), b.Get("startNew") == "1"}, true
+		}
+	}
+	return breakSpec{}, false
+}
+
+func breakAfterOf(n *FormNode) (breakSpec, bool) {
+	if b := n.Template.Child("breakAfter"); b != nil {
+		return breakSpec{targetTypeOf(b.Get("targetType")), b.Get("target"), b.Get("startNew") == "1"}, true
+	}
+	if b := n.Template.Child("break"); b != nil {
+		if b.Get("after") != "" || b.Get("afterTarget") != "" {
+			return breakSpec{targetTypeOf(b.Get("after")), b.Get("afterTarget"), b.Get("startNew") == "1"}, true
+		}
+	}
+	return breakSpec{}, false
+}
+
+// targetTypeOf reads a break's targetType. Its option list is "auto",
+// "contentArea", "pageArea" (template.js:1046-1050), and anything else — a
+// <break before="pageOdd"> among them — is the first entry.
+func targetTypeOf(v string) string {
+	switch v {
+	case "contentArea", "pageArea":
+		return v
+	default:
+		return "auto"
+	}
+}
+
+// A breakTo says where a break sends the layout: which page area, which of its
+// content areas, and whether a fresh sheet is started whatever.
+type breakTo struct {
+	area  *FormNode
+	index int
+	page  bool
+}
+
+// fire works out what a break does from where the layout is, and says whether
+// it does anything at all.
+//
+// This is pdf.js's handleBreak (template.js:328-400) with its two arms kept
+// apart. The thing worth noticing in it is how little a break usually does: a
+// <breakBefore targetType="pageArea"> with no target and no startNew is a
+// no-op, and Adobe's designer writes thousands of them. What is NOT a no-op is
+// startNew="1", which is two thousand of the two and a half thousand in the
+// corpus: it starts a fresh sheet of the page area in hand, exactly once.
+func (p *pager) fire(root *FormNode, b breakSpec, cur *FormNode, slot int) (breakTo, bool) {
+	if b.targetType == "auto" {
+		return breakTo{}, false
+	}
+	var target *FormNode
+	idx := -1
+	if b.target != "" {
+		if target, idx = p.resolve(root, b.target); target == nil {
+			return breakTo{}, false
+		}
+	}
+	if b.targetType == "pageArea" {
+		if target == nil || target.Kind != "pageArea" || idx >= 0 {
+			target = nil
+		}
+		switch {
+		case b.startNew:
+			if target == nil {
+				target = cur
+			}
+			return breakTo{area: target, page: true}, true
+		case target != nil && target != cur:
+			return breakTo{area: target, page: true}, true
+		}
+		return breakTo{}, false
+	}
+	// A content area, named as "PageArea.ContentArea" or "PageArea.#contentArea".
+	if idx < 0 {
+		target = nil
+	}
+	switch {
+	case b.startNew && target == nil:
+		// "Start the next container": the content area after this one, which
+		// is the next sheet where a page area holds only one.
+		return breakTo{index: slot + 1}, true
+	case b.startNew:
+		if target == cur && slot < idx {
+			return breakTo{index: idx}, true
+		}
+		return breakTo{area: target, index: idx, page: true}, true
+	case target != nil && !(target == cur && idx == slot):
+		if target == cur {
+			return breakTo{index: idx}, true
+		}
+		return breakTo{area: target, index: idx, page: true}, true
+	}
+	return breakTo{}, false
+}
+
+// use records that a break's target page area is being gone to, and says
+// whether it may be: a page area whose <occur> is spent is not reached by
+// naming it (template.js:5648-5654).
+func (p *pager) use(a *FormNode) bool {
+	if !p.areaUsable(a) {
+		return false
+	}
+	p.used[a]++
+	return true
+}
