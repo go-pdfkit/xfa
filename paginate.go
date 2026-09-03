@@ -109,6 +109,9 @@ func (p *placer) body(root *FormNode) {
 		return
 	}
 	if p.fires(root, false) {
+		// The form asks to begin on a sheet there is none of. Nothing of it is
+		// placed, and nothing of it is dropped either.
+		p.rejectAll(root, noNextPage)
 		return
 	}
 	if !p.push(root, x, y) {

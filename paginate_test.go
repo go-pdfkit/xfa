@@ -193,14 +193,14 @@ func TestTheFurnitureIsDrawnOnEverySheetItsPageAreaMakes(t *testing.T) {
 
 // twoAreas is a page area of two content areas, one above the other, so that a
 // sheet can be filled twice before it is turned.
-func twoAreas(name string) string {
-	return `<pageArea name="` + name + `"><medium long="1000pt" short="1000pt"/>` +
+func twoAreas(name, occur string) string {
+	return `<pageArea name="` + name + `">` + occur + `<medium long="1000pt" short="1000pt"/>` +
 		`<contentArea name="Top" x="0pt" y="0pt" w="500pt" h="20pt"/>` +
 		`<contentArea name="Low" x="100pt" y="200pt" w="500pt" h="20pt"/></pageArea>`
 }
 
 func TestASheetIsFilledContentAreaByContentAreaBeforeItIsTurned(t *testing.T) {
-	l := laidOut(t, sheets(`>`+twoAreas("P"), bricks(5, "15")))
+	l := laidOut(t, sheets(`>`+twoAreas("P", ""), bricks(5, "15")))
 	same(t, "the sheets", byPage(l), []string{
 		"0: draw f.A0 0,0 1x15",
 		"0: draw f.A1 100,200 1x15",
@@ -213,7 +213,7 @@ func TestASheetIsFilledContentAreaByContentAreaBeforeItIsTurned(t *testing.T) {
 }
 
 func TestABreakToAContentAreaStaysOnTheSheet(t *testing.T) {
-	l := laidOut(t, sheets(`>`+twoAreas("P"), `
+	l := laidOut(t, sheets(`>`+twoAreas("P", ""), `
 	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
 	  <subform name="S" layout="tb"><breakBefore targetType="contentArea" startNew="1"/>
 	    <draw name="B" w="1pt" h="5pt"/></subform>`))
@@ -356,4 +356,36 @@ func TestOneHeightNobodyCanArriveAtStopsEveryStackAboveIt(t *testing.T) {
 			noHeightWritten,
 		"f.C: a tb layout stacks its children, and the height of the one above it is not computed: " +
 			noHeightWritten})
+}
+
+func TestABreakBeforeTheWholeFormWithNowhereToGoLeavesNothingBehind(t *testing.T) {
+	// The outermost subform asks to start on a fresh sheet, and its page area
+	// may make only one. Nothing of the form is placed — and nothing of it is
+	// silently dropped either.
+	l := laidOut(t, `<template><subform name="f" layout="tb">
+	  <breakBefore targetType="pageArea" startNew="1"/>
+	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	    <contentArea w="500pt" h="100pt"/></pageArea></pageSet>
+	  <draw name="A" w="1pt" h="5pt"/><draw name="B" w="1pt" h="5pt"/></subform></template>`)
+	same(t, "the sheets", byPage(l), nil)
+	same(t, "what was left off", notLaid(l), []string{"f.A: " + noNextPage, "f.B: " + noNextPage})
+}
+
+func TestABreakToASheetThatIsSpentTakesTheSequenceInstead(t *testing.T) {
+	// P1 offers two content areas and may make one sheet; P2 offers one and
+	// may make any number. The body fills both of P1's, moves to P2, and then
+	// a break names P1's SECOND content area — which cannot be gone to,
+	// because P1 is spent. The sequence takes over, and the content area the
+	// break asked for does not exist on the sheet it lands on.
+	l := laidOut(t, sheets(`>`+twoAreas("P1", `<occur max="1"/>`)+
+		`<pageArea name="P2"><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea x="7pt" y="0pt" w="500pt" h="20pt"/></pageArea>`, `
+	  <subform name="F" layout="tb">`+bricks(3, "15")+`</subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="contentArea" target="P1.Low" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.F.A0 0,0 1x15",
+		"0: draw f.F.A1 100,200 1x15",
+		"1: draw f.F.A2 7,0 1x15",
+		"2: draw f.S.B 7,0 1x5"})
 }

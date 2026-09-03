@@ -265,3 +265,26 @@ func TestASpentPageAreaIsNotReachedByNamingIt(t *testing.T) {
 		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.B 0,0 1x5",
 		"2: draw f.T.C 0,0 1x5"})
 }
+
+func TestCleaningAPageSetForgetsWhatIsNestedInItToo(t *testing.T) {
+	// The set may run once, its page area once, and the set nested in it once.
+	// When all are spent the last thing left is to forget it all, and that has
+	// to reach the nested set as well or the sequence starts again with half
+	// of it still spent.
+	//
+	// B does not come second. pdf.js starts the form with pageSetIndex at
+	// NOUGHT rather than at minus one (template.js:5490), so the first nested
+	// page set counts as already gone through; only after the clean, which
+	// puts it back to minus one, is it reached.
+	same(t, "the sequence",
+		order(t, `><occur max="1"/>`+bare("A", "", `<occur max="1"/>`)+
+			`<pageSet><occur max="1"/>`+bare("B", "", `<occur max="1"/>`)+`</pageSet>`, 5),
+		[]string{"A", "A", "B", "A", "B"})
+}
+
+func TestADuplexPageSetWithNoPageAreaHasNothingToPickFrom(t *testing.T) {
+	same(t, "the sequence",
+		order(t, ">"+bare("A", "", `<occur max="1"/>`)+
+			`<pageSet relation="duplexPaginated"></pageSet>`, 3),
+		[]string{"A", "-"})
+}

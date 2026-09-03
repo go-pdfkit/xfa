@@ -390,3 +390,36 @@ func TestReadingAMargin(t *testing.T) {
 		}
 	}
 }
+
+func TestARowWhoseCellHasNoHeightHasNoHeightEither(t *testing.T) {
+	// A row is as tall as its tallest cell, so one cell nobody can measure
+	// leaves the row unmeasured — and the table above it with it.
+	l := laidOut(t, page(`w="500pt" h="500pt"`, `
+	  <subform name="T" layout="table" columnWidths="10pt 10pt">
+	    <subform name="R" layout="row"><draw name="A" w="1pt"/></subform>
+	  </subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	same(t, "what was left off", notLaid(l), []string{
+		"f.T.R.A: " + noHeightWritten,
+		// The reason names where the stack actually stopped, which is the table
+		// rather than the subform above it.
+		"f.B: a table layout stacks its children, and the height of the one above it is not computed: " +
+			noHeightWritten})
+}
+
+func TestInsideAContainerThatMovesWholeAStackStillStops(t *testing.T) {
+	// G is kept intact, so what is inside it is laid out by the stacking that
+	// does not turn pages. A margin nobody can read stops the container that
+	// writes it, and the height it therefore has not got stops the stack it
+	// sits in.
+	l := laidOut(t, page(`w="500pt" h="500pt"`, `
+	  <subform name="G" layout="tb"><keep intact="contentArea"/>
+	    <subform name="Bad" layout="tb"><margin topInset="=1"/>
+	      <draw name="A" w="1pt" h="5pt"/></subform>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the page", laid(l), nil)
+	same(t, "what was left off", notLaid(l), []string{
+		"f.G.Bad.A: the container that stacks it writes a margin that is not in lengths",
+		"f.G.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
+			"its margin is not written in lengths"})
+}
