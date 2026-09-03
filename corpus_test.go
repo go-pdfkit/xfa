@@ -258,3 +258,132 @@ func countValues(n *Node) int {
 	}
 	return c
 }
+
+// countTemplateFields counts a template's <field> elements the way the
+// instrument at /Users/Shared/xfacount/count.py counts them: by the layout of
+// the ENCLOSING SUBFORM, with an absent layout read as "position", and with a
+// literal w and h required. It is here so that the number this package
+// produces is compared against a number produced the same way, and so that a
+// later change to either can be seen to move one and not the other.
+//
+// c is, in order: position with a literal size, under a flow layout, needing
+// text measurement, and the total.
+func countTemplateFields(n *Node, parentLayout string, c *[4]int) {
+	for _, k := range n.Kids {
+		switch k.Kind {
+		case "subform":
+			lay := k.Get("layout")
+			if !flowLayouts[lay] {
+				lay = "position"
+			}
+			countTemplateFields(k, lay, c)
+		case "field":
+			c[3]++
+			_, okW, errW := k.Measure("w")
+			_, okH, errH := k.Measure("h")
+			switch {
+			case flowLayouts[parentLayout]:
+				c[1]++
+			case !okW || !okH || errW != nil || errH != nil:
+				c[2]++
+			default:
+				c[0]++
+			}
+		default:
+			countTemplateFields(k, parentLayout, c)
+		}
+	}
+}
+
+// TestPlacementOverTheCorpus is the number this slice is judged by: how many
+// of the corpus's fields it actually places, against how many a count over the
+// templates says it should reach.
+//
+//	XFACORPUS=/path/to/parts go test -run PlacementOverTheCorpus -v
+//
+// It also holds this package to the invariant the reporting is worth anything
+// for: every field and every draw of the expanded form is in exactly one of
+// the placed boxes and the unplaced list. A count that does not add up is a
+// count of something else.
+func TestPlacementOverTheCorpus(t *testing.T) {
+	dir := os.Getenv("XFACORPUS")
+	if dir == "" {
+		t.Skip("no XFACORPUS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+
+	var tmplCount [4]int
+	var expandedFields, expandedDraws, placedFields, placedDraws int
+	why := map[string]int{}
+	shortfall := map[string]int{}
+	for _, name := range names {
+		tmpl := readNode(t, name, true)
+		if tmpl == nil {
+			continue
+		}
+		countTemplateFields(tmpl, "position", &tmplCount)
+		stem := strings.TrimSuffix(name, ".template.xml")
+		form := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
+
+		ef, ed := 0, 0
+		form.Root.Walk(func(k *FormNode) {
+			switch k.Kind {
+			case "field":
+				ef++
+			case "draw":
+				ed++
+			}
+		})
+		expandedFields += ef
+		expandedDraws += ed
+
+		l := Place(form)
+		pf, pd, uf, ud := 0, 0, 0, 0
+		for _, p := range l.Pages {
+			for _, b := range p.Boxes {
+				if b.Kind == "field" {
+					pf++
+				} else {
+					pd++
+				}
+			}
+		}
+		for _, u := range l.Unplaced {
+			if u.Kind == "field" {
+				uf++
+				why[u.Why]++
+			} else {
+				ud++
+			}
+		}
+		if pf+uf != ef || pd+ud != ed {
+			t.Errorf("%s: %d fields expanded, %d placed and %d unplaced; %d draws, %d and %d",
+				filepath.Base(stem), ef, pf, uf, ed, pd, ud)
+		}
+		placedFields += pf
+		placedDraws += pd
+		shortfall[filepath.Base(stem)] = pf
+	}
+
+	t.Logf("template: %d fields — %d position with a literal size, %d flow, %d needing measurement",
+		tmplCount[3], tmplCount[0], tmplCount[1], tmplCount[2])
+	t.Logf("expanded: %d fields, %d draws", expandedFields, expandedDraws)
+	t.Logf("PLACED:   %d fields, %d draws — against %d predicted, %+d",
+		placedFields, placedDraws, tmplCount[0], placedFields-tmplCount[0])
+	type kv struct {
+		k string
+		n int
+	}
+	var list []kv
+	for k, n := range why {
+		list = append(list, kv{k, n})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
+	for _, e := range list {
+		t.Logf("  unplaced %6d  %s", e.n, e.k)
+	}
+}

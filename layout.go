@@ -156,6 +156,7 @@ func Place(form *Form) *Layout {
 		l.Pages = []Page{page}
 		return l
 	}
+	p.chosen = area
 	page.Width, page.Height = pageSize(area.Template)
 	if content := area.Template.Child("contentArea"); content != nil {
 		page.Content = contentRect(content)
@@ -166,30 +167,27 @@ func Place(form *Form) *Layout {
 	// rules, the page number — and they sit in the page's frame, not the
 	// content area's. pdf.js pushes them straight into the page div
 	// (template.js:4111-4114) and the content area's div beside them.
-	for _, kid := range area.Kids {
-		p.place(kid, 0, 0, "")
-	}
+	p.placeAt(area, 0, 0)
 
-	// Every other page area. This slice lays out one page, so their contents
-	// are reported rather than quietly left off the only sheet there is.
-	p.rejectOtherPages(root, area)
-
-	// The body. The page set is not part of it — it describes the paper.
-	content := area.Template.Child("contentArea")
-	for _, kid := range root.Kids {
-		if kid.Kind == "pageSet" {
-			continue
-		}
-		if content == nil {
-			// pdf.js filters the page's children for the content area's div
-			// and indexes the result (template.js:5532-5546); with none, the
-			// loop over content areas does not run and the body is never laid
-			// out at all.
+	if area.Template.Child("contentArea") == nil {
+		// pdf.js filters the page's children for the content area's div and
+		// indexes the result (template.js:5532-5546); with none, the loop over
+		// content areas does not run and the body is never laid out at all.
+		for _, kid := range root.Kids {
+			if kid.Kind == "pageSet" {
+				p.rejectExcept(kid, area, otherPageArea)
+				continue
+			}
 			p.rejectAll(kid, "the page area has no content area")
-			continue
 		}
-		p.place(kid, page.Content.X, page.Content.Y, "")
+		l.Pages = []Page{page}
+		return l
 	}
+	// The body. pdf.js pushes the outermost subform's own html into the
+	// content area's div (template.js:5563-5568), so the subform is placed
+	// like any other container: at the content area's origin, offset by its
+	// own x and y, and imposing its own layout on its children.
+	p.place(root, page.Content.X, page.Content.Y)
 	l.Pages = []Page{page}
 	return l
 }
@@ -199,30 +197,19 @@ func Place(form *Form) *Layout {
 type placer struct {
 	page   *Page
 	layout *Layout
+	// chosen is the page area being laid out. Every other one under the form's
+	// page sets holds elements this slice does not reach, and they are
+	// reported rather than left off the only sheet there is.
+	chosen *FormNode
 }
 
-// place puts one container and everything under it on the page.
-//
-// ox and oy are the origin of the frame the container's own x and y are
-// measured in, absolute on the page. parentLayout is the layout of the
-// enclosing container — which is what decides whether coordinates are read at
-// all, and is not the container's own: pdf.js asks
-// node[$getSubformParent]().layout (html_utils.js:113).
-func (p *placer) place(n *FormNode, ox, oy Measure, parentLayout string) {
-	if flowLayouts[parentLayout] {
-		p.rejectAll(n, fmt.Sprintf("it is inside a %s layout, which stacks its children", parentLayout))
-		return
-	}
-	if n.Kind == "subformSet" {
-		// A subformSet holds no place of its own: pdf.js yields its children
-		// as if they were its parent's ($getContainedChildren,
-		// template.js:198-206) and skips it when it asks who the parent is
-		// ($getSubformParent, template.js:4901-4907).
-		for _, kid := range n.Kids {
-			p.place(kid, ox, oy, parentLayout)
-		}
-		return
-	}
+// otherPageArea is why an element on a page this slice does not lay out is not
+// on the page it does.
+const otherPageArea = "it is on another page area: this slice lays out the first one only"
+
+// place puts one container and everything under it on the page, at its own x
+// and y within the frame whose origin is ox, oy.
+func (p *placer) place(n *FormNode, ox, oy Measure) {
 	// x and y default to nought when a template leaves them out, as they do in
 	// pdf.js: getMeasurement(attributes.x, "0pt"). Written and unreadable is a
 	// different answer, and stops the subtree rather than putting it at nought.
@@ -234,20 +221,129 @@ func (p *placer) place(n *FormNode, ox, oy Measure, parentLayout string) {
 		return
 	}
 	x, y = ox+x, oy+y
+	if n.Kind == "field" || n.Kind == "draw" {
+		p.leaf(n, x, y, true)
+		return
+	}
+	// A container may be anchored by a corner other than its top left, or
+	// turned. pdf.js emits both as a CSS transform on the element itself
+	// (html_utils.js:44-79, 125-133), and a transform moves everything inside
+	// it, so its children are measured from where it ends up rather than from
+	// where its x and y say.
+	if anchored(n.Template) || rotateOf(n.Template) != 0 {
+		w, okW, _ := n.Template.Measure("w")
+		h, okH, _ := n.Template.Measure("h")
+		if !okW || !okH {
+			// Its own size is what the anchor is measured against, and a
+			// container's size is usually its contents'. That is the
+			// measurement this slice does not do.
+			p.rejectAll(n, "it is anchored by a corner other than its top left, "+
+				"and its size is not written: only measuring its contents would give it")
+			return
+		}
+		r, rotate := transformedBBox(n.Template, x, y, w, h)
+		if rotate != 0 {
+			p.rejectAll(n, "its contents are turned, which this slice does not follow")
+			return
+		}
+		x, y = r.X, r.Y
+	}
+	p.children(n, x, y)
+}
 
-	switch n.Kind {
-	case "field", "draw":
-		p.leaf(n, x, y)
-	default:
-		for _, kid := range n.Kids {
-			p.place(kid, x, y, layoutOf(n))
+// placeAt puts one container at an origin already decided, with its own x, y
+// and anchorType left out of it. That is what a flow layout does to its first
+// child: pdf.js zeroes the coordinates (fixDimensions, html_utils.js:347-350)
+// and both the position and the anchorType converters return without emitting
+// anything unless the enclosing layout is positioned (html_utils.js:44-48,
+// 112-118).
+func (p *placer) placeAt(n *FormNode, x, y Measure) {
+	if n.Kind == "field" || n.Kind == "draw" {
+		p.leaf(n, x, y, false)
+		return
+	}
+	p.children(n, x, y)
+}
+
+// children puts everything inside a container on the page, from the origin the
+// container ended up at.
+func (p *placer) children(n *FormNode, x, y Measure) {
+	for _, kid := range n.Kids {
+		if kid.Kind == "pageSet" {
+			// The paper rather than the body: the page areas under it describe
+			// the sheets. One of them is the sheet being laid out and its
+			// furniture is already on it; the rest are not.
+			p.rejectExcept(kid, p.chosen, otherPageArea)
+		}
+	}
+	lay := layoutOf(n)
+	kids := contained(n)
+	if !flowLayouts[lay] {
+		for _, kid := range kids {
+			p.place(kid, x, y)
+		}
+		return
+	}
+	// A flow layout stacks its children and throws their coordinates away. The
+	// FIRST one is still exactly placed: pdf.js accumulates from nought —
+	// extra.height starts at 0 and the first child is pushed before anything
+	// is added to it (layout.js:145-160) — so the first child of a tb, a
+	// table, an lr-tb or a row sits at the container's own origin. Where the
+	// second one begins is the height of the first, which is the flow layout
+	// this slice does not do.
+	//
+	// This is what makes the slice reach a real form at all: 556 of the
+	// corpus's 560 outermost subforms are "tb", so a rule that refused every
+	// flow container would refuse practically everything.
+	for i, kid := range kids {
+		switch {
+		case i > 0:
+			p.rejectAll(kid, fmt.Sprintf(
+				"a %s layout stacks its children, and where the one above it ends is not computed here", lay))
+		case !firstAtOrigin[lay]:
+			p.rejectAll(kid, fmt.Sprintf(
+				"a %s layout fills from the right, which needs a width not computed here", lay))
+		default:
+			p.placeAt(kid, x, y)
 		}
 	}
 }
 
+// firstAtOrigin are the flow layouts whose first child sits at the container's
+// own origin. The two that are missing fill from the right — pdf.js gives them
+// CSS row-reverse (web/xfa_layer_builder.css:265-273) — so where their first
+// child begins is the container's width less the child's.
+var firstAtOrigin = map[string]bool{
+	"lr-tb": true,
+	"row":   true,
+	"table": true,
+	"tb":    true,
+}
+
+// contained is a container's children as layout sees them. A subformSet is not
+// one of them: its children are yielded as if they were its parent's
+// (pdf.js $getContainedChildren, template.js:198-206), and it is skipped when
+// layout asks who the parent is ($getSubformParent, template.js:4901-4907). A
+// page set is not one either — pdf.js leaves it out of the filter it walks
+// children with (template.js:5090-5100).
+func contained(n *FormNode) []*FormNode {
+	var out []*FormNode
+	for _, k := range n.Kids {
+		switch k.Kind {
+		case "pageSet":
+		case "subformSet":
+			out = append(out, contained(k)...)
+		default:
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // leaf places a field or a draw, which is where a form's width and height stop
-// being optional.
-func (p *placer) leaf(n *FormNode, x, y Measure) {
+// being optional. anchor says whether the element's own anchorType and rotate
+// apply, which they do not when a flow layout put it where it is.
+func (p *placer) leaf(n *FormNode, x, y Measure, anchor bool) {
 	w, okW, errW := n.Template.Measure("w")
 	h, okH, errH := n.Template.Measure("h")
 	switch {
@@ -261,7 +357,10 @@ func (p *placer) leaf(n *FormNode, x, y Measure) {
 		p.reject(n, "the template does not write its "+missing(okW, okH)+
 			", which only measuring its text would give")
 	default:
-		r, rotate := transformedBBox(n.Template, x, y, w, h)
+		r, rotate := Rect{X: x, Y: y, W: w, H: h}, 0
+		if anchor {
+			r, rotate = transformedBBox(n.Template, x, y, w, h)
+		}
 		p.page.Boxes = append(p.page.Boxes, Box{
 			Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate, Value: n.Value,
 		})
@@ -283,17 +382,6 @@ func missing(okW, okH bool) string {
 // reject records one element this did not place.
 func (p *placer) reject(n *FormNode, why string) {
 	p.layout.Unplaced = append(p.layout.Unplaced, Unplaced{Node: n, Kind: n.Kind, Path: n.Path, Why: why})
-}
-
-// rejectOtherPages records the contents of every page area but the one being
-// laid out. A form that describes a first page and a continuation page has
-// both under its page set, and only the first is on this sheet.
-func (p *placer) rejectOtherPages(root, chosen *FormNode) {
-	for _, kid := range root.Kids {
-		if kid.Kind == "pageSet" {
-			p.rejectExcept(kid, chosen, "it is on another page area: this slice lays out the first one only")
-		}
-	}
 }
 
 // rejectExcept records every field and draw under a container except those
@@ -450,6 +538,19 @@ func transformedBBox(n *Node, x, y, w, h Measure) (Rect, int) {
 		W: abs(w),
 		H: abs(h),
 	}, rotate
+}
+
+// anchored says an element names a corner other than its top left for its x
+// and y to mean. "topLeft" and an absent attribute are the same thing: it is
+// the first entry of the option list pdf.js passes to getStringOption
+// (template.js), which is what an absent or unrecognised value yields.
+func anchored(n *Node) bool {
+	switch n.Get("anchorType") {
+	case "", "topLeft":
+		return false
+	default:
+		return true
+	}
 }
 
 // rotateOf reads the rotate attribute. XFA allows a whole number of degrees
