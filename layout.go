@@ -659,22 +659,6 @@ func firstOfKind(n *FormNode, kind string) *FormNode {
 	return nil
 }
 
-// firstPageArea is the page the form starts on: the first page area under the
-// outermost subform's page set, however deeply the page sets nest.
-//
-// pdf.js reads root.pageSet.pageArea.children[0] (template.js:5439-5482) after
-// a break may have named another; this slice does not read breaks, so it takes
-// the first.
-func firstPageArea(root *FormNode) *FormNode {
-	var found *FormNode
-	root.Walk(func(k *FormNode) {
-		if found == nil && k.Kind == "pageArea" {
-			found = k
-		}
-	})
-	return found
-}
-
 // pageSize is the sheet a page area asks for.
 //
 // A medium gives the short and the long side rather than a width and a height,
