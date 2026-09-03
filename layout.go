@@ -5,7 +5,10 @@
 
 package xfa
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // A Rect is a box on the page, in points.
 //
@@ -36,6 +39,13 @@ type Box struct {
 	Rotate int
 	// Value is what the data put in it, for a bound field. Empty otherwise.
 	Value string
+	// Hidden says the template asks for it not to be drawn: presence
+	// "hidden" or "inactive". pdf.js emits display:none for both
+	// (html_utils.js:133-141) and a flow layout gives them no room, so the
+	// element after one begins where it does. It is reported rather than left
+	// out, because a caller counting what is on a page needs to know that
+	// something is there and asked not to be seen.
+	Hidden bool
 }
 
 // An Unplaced is one element of the form this package did not place, and why.
@@ -92,8 +102,8 @@ func (l *Layout) Fields() int {
 }
 
 // flowLayouts are the layouts that place a container's children by stacking
-// them rather than by their own coordinates. This package does not do any of
-// them yet; see [Place].
+// them rather than by their own coordinates. See [Place] for which of them
+// this package follows.
 var flowLayouts = map[string]bool{
 	"lr-tb":  true,
 	"rl-row": true,
@@ -103,38 +113,51 @@ var flowLayouts = map[string]bool{
 	"tb":     true,
 }
 
-// Place lays a form out on one page, under positioned layout only.
+// Place lays a form out on one page.
 //
 // # What it does
 //
-// Every container of the form has an x and a y, and under a positioned layout
-// they mean what they say: the element goes there, in the frame of whatever
-// contains it. So a box's place on the page is its own x and y added to those
-// of every container above it, down from the content area's origin. That is
-// what this computes, resolving anchorType and rotate on the way
-// (pdf.js layout.js:202-259), and it is what pdf.js computes too — under
-// "position" it emits style.left and style.top from the node's own x and y
-// (html_utils.js:112-123), and delegates to the browser's flexbox only for the
-// flow layouts.
+// Under a POSITIONED layout every container has an x and a y that mean what
+// they say, so a box's place on the page is its own x and y added to those of
+// every container above it, down from the content area's origin, with
+// anchorType and rotate resolved on the way (pdf.js layout.js:202-259). That
+// is what pdf.js computes too — under "position" it emits style.left and
+// style.top from the node's own x and y (html_utils.js:112-123).
+//
+// Under a FLOW layout the coordinates are thrown away (html_utils.js:347-350)
+// and the children are stacked instead. This follows two of the six:
+//
+//   - tb and table stack downwards. The first child sits at the container's
+//     own origin, and each one after it begins where the one above it ends
+//     (layout.js:144-158, extra.height += h). A container's own height is the
+//     taller of what it holds and what the template writes for it
+//     (template.js:5221-5223), so the heights are arrived at from the bottom
+//     of the tree upwards, out of the literal w and h of the fields and draws
+//     at the leaves.
+//   - row cuts its cells from the columnWidths of the table above it
+//     (html_utils.js:81-106), a cell spanning colSpan of them, and stretches
+//     every cell to the height of the tallest (layout.js:135-143).
+//
+// A container's margin is its own, outside what it holds: it moves the
+// children in by the left and top insets and adds all four to the height the
+// container reports upwards (template.js:5217-5223, layout.js:162-171). A
+// field's and a draw's margin is not — both turn it into padding
+// (template.js:1949-1952, 2917-2920), inside a box the template already sized.
 //
 // # What it deliberately does not do, and reports instead
 //
-//   - Flow layouts — tb, lr-tb, rl-tb, row, rl-row, table. Under those, x and
-//     y are thrown away (html_utils.js:347-350) and the children are stacked;
-//     pdf.js hands that to CSS, so there is no reference to follow and it is
-//     the whole of the next slice. 14.1% of the corpus's fields.
-//   - Text measurement. A field whose template writes no width has no width
-//     until its text is measured. 0.5% of the corpus's fields.
-//   - Splitting, pagination, breaks, leaders and trailers. One page area, its
-//     first content area, and whatever does not fit hangs off the bottom.
-//   - Borders, margins and insets. A child's origin is its parent's x and y,
-//     not the inside of its parent's border.
-//   - colSpan. A cell in a row or a table takes its width from the parent's
-//     columnWidths rather than from its own w (html_utils.js:81-111, 330-346).
-//     Where this slice places the first child of a row, it uses the child's
-//     own w — and that is the ONLY thing pdf.js and this package disagree
-//     about over the corpus: 5 boxes of 21 933, all of them the width, none
-//     of them the place.
+//   - lr-tb, and rl-tb, rl-row. The first wraps its children onto lines, which
+//     needs their widths and a line-breaking rule; the last two fill from the
+//     right, which needs the container's width. Only the first child of an
+//     lr-tb is placed, at the container's origin.
+//   - Text measurement. A field whose template writes no height has no height
+//     until its text is measured — and under a stack, neither has anything
+//     below it, because where the next child begins is the height of this one.
+//   - Splitting and pagination. One page area and its first content area.
+//     What does not fit is reported rather than carried onto a second page or
+//     drawn hanging off the bottom.
+//   - Borders. A child's origin is the inside of its parent's margin, not the
+//     inside of its parent's border.
 //
 // Each of those leaves its elements in [Layout.Unplaced] with the reason
 // written out. Nothing is dropped: every field and draw of the expanded form
@@ -152,7 +175,7 @@ func Place(form *Form) *Layout {
 	if root == nil {
 		return l
 	}
-	p := &placer{layout: l}
+	p := &placer{layout: l, heights: map[*FormNode]height{}}
 	page := Page{}
 	area := firstPageArea(root)
 	if area == nil {
@@ -164,7 +187,8 @@ func Place(form *Form) *Layout {
 	}
 	p.chosen = area
 	page.Width, page.Height = pageSize(area.Template)
-	if content := area.Template.Child("contentArea"); content != nil {
+	content := area.Template.Child("contentArea")
+	if content != nil {
 		page.Content = contentRect(content)
 	}
 	p.page = &page
@@ -173,9 +197,9 @@ func Place(form *Form) *Layout {
 	// rules, the page number — and they sit in the page's frame, not the
 	// content area's. pdf.js pushes them straight into the page div
 	// (template.js:4111-4114) and the content area's div beside them.
-	p.placeAt(area, 0, 0)
+	p.placeAt(area, frame{avail: given(page.Height)}, nil)
 
-	if area.Template.Child("contentArea") == nil {
+	if content == nil {
 		// pdf.js filters the page's children for the content area's div and
 		// indexes the result (template.js:5532-5546); with none, the loop over
 		// content areas does not run and the body is never laid out at all.
@@ -193,9 +217,34 @@ func Place(form *Form) *Layout {
 	// content area's div (template.js:5563-5568), so the subform is placed
 	// like any other container: at the content area's origin, offset by its
 	// own x and y, and imposing its own layout on its children.
-	p.place(root, page.Content.X, page.Content.Y)
+	//
+	// The content area's height is the room the whole body has, and it is what
+	// a stack measures a fit against: "const space = { width: contentArea.w,
+	// height: contentArea.h }" (template.js:5556).
+	p.place(root, frame{x: page.Content.X, y: page.Content.Y, avail: contentAvail(content)})
 	l.Pages = []Page{page}
 	return l
+}
+
+// contentAvail is the vertical room a content area gives the body. A content
+// area that writes no height, or one nobody can read, bounds nothing: pdf.js
+// reads h with no default (template.js:1556) and would compare against NaN.
+func contentAvail(content *Node) Measure {
+	h, ok, err := content.Measure("h")
+	if !ok || err != nil {
+		return unbounded
+	}
+	return h
+}
+
+// given is a page's height where the medium wrote one, and no bound where it
+// did not. [pageSize] answers nought for both, because a page of no size is
+// not a page.
+func given(h Measure) Measure {
+	if h == 0 {
+		return unbounded
+	}
+	return h
 }
 
 // A placer carries the one page being filled and the reasons for what is not
@@ -207,15 +256,45 @@ type placer struct {
 	// page sets holds elements this slice does not reach, and they are
 	// reported rather than left off the only sheet there is.
 	chosen *FormNode
+	// heights memoises what each node contributes to the stack above it. See
+	// [placer.heightOf].
+	heights map[*FormNode]height
+}
+
+// A frame is where an element goes and what room it has there.
+type frame struct {
+	// x, y is where its own box begins, on the page.
+	x, y Measure
+	// avail is how much vertical room it has: the content area's height, less
+	// whatever the containers between here and there have already spent.
+	avail Measure
+	// cols are the columnWidths of the container above it, which a row cuts
+	// its cells from and every other layout ignores.
+	cols []Measure
+}
+
+// A cell is the size a row imposes on a child of its own, in place of the size
+// the template writes for it: the width comes from the table's columnWidths
+// (html_utils.js:81-106) and the height from the tallest cell in the row,
+// which pdf.js writes back over every cell already placed (layout.js:135-143).
+type cell struct {
+	w, h      Measure
+	stretched bool
 }
 
 // otherPageArea is why an element on a page this slice does not lay out is not
 // on the page it does.
 const otherPageArea = "it is on another page area: this slice lays out the first one only"
 
+// overflows is why an element that would begin below the room its container
+// has is not placed. pdf.js does not refuse it: it fails the container, and
+// the page loop carries what is left onto the next content area
+// (template.js:5502-5600). That is the next slice.
+const overflows = "there is no room left for it where it is stacked, and this slice does not carry what overflows onto another page"
+
 // place puts one container and everything under it on the page, at its own x
-// and y within the frame whose origin is ox, oy.
-func (p *placer) place(n *FormNode, ox, oy Measure) {
+// and y within the frame it is given.
+func (p *placer) place(n *FormNode, f frame) {
 	// x and y default to nought when a template leaves them out, as they do in
 	// pdf.js: getMeasurement(attributes.x, "0pt"). Written and unreadable is a
 	// different answer, and stops the subtree rather than putting it at nought.
@@ -226,9 +305,9 @@ func (p *placer) place(n *FormNode, ox, oy Measure) {
 			n.Template.Get("x"), n.Template.Get("y")))
 		return
 	}
-	x, y = ox+x, oy+y
+	f.x, f.y = f.x+x, f.y+y
 	if n.Kind == "field" || n.Kind == "draw" {
-		p.leaf(n, x, y, true)
+		p.leaf(n, f, true, nil)
 		return
 	}
 	// A container may be anchored by a corner other than its top left, or
@@ -247,33 +326,33 @@ func (p *placer) place(n *FormNode, ox, oy Measure) {
 				"and its size is not written: only measuring its contents would give it")
 			return
 		}
-		r, rotate := transformedBBox(n.Template, x, y, w, h)
+		r, rotate := transformedBBox(n.Template, f.x, f.y, w, h)
 		if rotate != 0 {
 			p.rejectAll(n, "its contents are turned, which this slice does not follow")
 			return
 		}
-		x, y = r.X, r.Y
+		f.x, f.y = r.X, r.Y
 	}
-	p.children(n, x, y)
+	p.children(n, f)
 }
 
 // placeAt puts one container at an origin already decided, with its own x, y
-// and anchorType left out of it. That is what a flow layout does to its first
-// child: pdf.js zeroes the coordinates (fixDimensions, html_utils.js:347-350)
+// and anchorType left out of it. That is what a flow layout does to its
+// children: pdf.js zeroes the coordinates (fixDimensions, html_utils.js:347-350)
 // and both the position and the anchorType converters return without emitting
 // anything unless the enclosing layout is positioned (html_utils.js:44-48,
 // 112-118).
-func (p *placer) placeAt(n *FormNode, x, y Measure) {
+func (p *placer) placeAt(n *FormNode, f frame, over *cell) {
 	if n.Kind == "field" || n.Kind == "draw" {
-		p.leaf(n, x, y, false)
+		p.leaf(n, f, false, over)
 		return
 	}
-	p.children(n, x, y)
+	p.children(n, f)
 }
 
 // children puts everything inside a container on the page, from the origin the
-// container ended up at.
-func (p *placer) children(n *FormNode, x, y Measure) {
+// container ended up at, in the way the container's layout says.
+func (p *placer) children(n *FormNode, f frame) {
 	for _, kid := range n.Kids {
 		if kid.Kind == "pageSet" {
 			// The paper rather than the body: the page areas under it describe
@@ -282,48 +361,121 @@ func (p *placer) children(n *FormNode, x, y Measure) {
 			p.rejectExcept(kid, p.chosen, otherPageArea)
 		}
 	}
-	lay := layoutOf(n)
 	kids := contained(n)
-	if !flowLayouts[lay] {
+	// A row asks the container above it for its columns
+	// ($getSubformParent().columnWidths, template.js:5096-5099), so they are
+	// handed down one level whatever the layout here is.
+	cols, _ := columnWidths(n.Template)
+	switch lay := layoutOf(n); lay {
+	case "tb", "table":
+		p.stack(n, kids, lay, f, cols)
+	case "row":
+		p.cells(n, kids, f)
+	case "lr-tb", "rl-tb", "rl-row":
+		p.firstOnly(kids, lay, f, cols)
+	default:
 		for _, kid := range kids {
-			p.place(kid, x, y)
-		}
-		return
-	}
-	// A flow layout stacks its children and throws their coordinates away. The
-	// FIRST one is still exactly placed: pdf.js accumulates from nought —
-	// extra.height starts at 0 and the first child is pushed before anything
-	// is added to it (layout.js:145-160) — so the first child of a tb, a
-	// table, an lr-tb or a row sits at the container's own origin. Where the
-	// second one begins is the height of the first, which is the flow layout
-	// this slice does not do.
-	//
-	// This is what makes the slice reach a real form at all: 556 of the
-	// corpus's 560 outermost subforms are "tb", so a rule that refused every
-	// flow container would refuse practically everything.
-	for i, kid := range kids {
-		switch {
-		case i > 0:
-			p.rejectAll(kid, fmt.Sprintf(
-				"a %s layout stacks its children, and where the one above it ends is not computed here", lay))
-		case !firstAtOrigin[lay]:
-			p.rejectAll(kid, fmt.Sprintf(
-				"a %s layout fills from the right, which needs a width not computed here", lay))
-		default:
-			p.placeAt(kid, x, y)
+			p.place(kid, frame{x: f.x, y: f.y, avail: f.avail, cols: cols})
 		}
 	}
 }
 
-// firstAtOrigin are the flow layouts whose first child sits at the container's
-// own origin. The two that are missing fill from the right — pdf.js gives them
-// CSS row-reverse (web/xfa_layer_builder.css:265-273) — so where their first
-// child begins is the container's width less the child's.
-var firstAtOrigin = map[string]bool{
-	"lr-tb": true,
-	"row":   true,
-	"table": true,
-	"tb":    true,
+// stack puts a tb or a table container's children one below the other.
+func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, cols []Measure) {
+	in, ok := marginOf(n.Template)
+	if !ok {
+		p.rejectKids(kids, "the container that stacks it writes a margin that is not in lengths")
+		return
+	}
+	// The room the children have is the room the container has, never more
+	// than the height the container is given, less its own insets:
+	// availableSpace = min(this.h || Infinity, availableSpace.height)
+	// (template.js:5062-5065) and then getAvailableSpace subtracts the margin
+	// (layout.js:162-171).
+	room := f.avail
+	if own, okH, errH := n.Template.Measure("h"); okH && errH == nil {
+		room = min(room, own)
+	}
+	room -= in.vertical()
+	x, y := f.x+in.left, f.y+in.top
+	var off Measure
+	for i, kid := range kids {
+		h, why := p.heightOf(kid)
+		if why != "" {
+			// Where this one begins is known exactly, so it is placed. Where
+			// the one after it begins is this one's height, so it is not, and
+			// neither is anything after that.
+			p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, cols: cols}, nil)
+			p.rejectKids(kids[i+1:], fmt.Sprintf(
+				"a %s layout stacks its children, and the height of the one above it is not computed: %s", lay, why))
+			return
+		}
+		// pdf.js rounds before comparing and allows two points of slop
+		// (layout.js:275, 349). See [fitSlop].
+		if math.Round(float64(off+h-room)) > fitSlop {
+			p.rejectKids(kids[i:], overflows)
+			return
+		}
+		p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, cols: cols}, nil)
+		off += h
+	}
+}
+
+// cells puts a row's children side by side, each as wide as the columns it
+// spans and all of them as tall as the tallest.
+func (p *placer) cells(n *FormNode, kids []*FormNode, f frame) {
+	if len(f.cols) == 0 {
+		p.rejectKids(kids, "a row cuts its cells from the columnWidths of the container above it, which writes none this reads")
+		return
+	}
+	// Every cell is stretched to the row's height, which is the tallest of
+	// them (layout.js:135-143). Where one of them has no height, none of them
+	// is stretched and each keeps its own.
+	tall, why := p.contentHeight(n)
+	over := cell{h: tall, stretched: why == ""}
+	room := f.avail
+	if why == "" {
+		room = tall
+	}
+	x, col := f.x, 0
+	for _, kid := range kids {
+		if hidden(kid.Template) {
+			// pdf.js returns EMPTY before it reads colSpan, so a hidden cell
+			// takes no column and the next one is where it would have been.
+			p.placeAt(kid, frame{x: x, y: f.y, avail: room}, nil)
+			continue
+		}
+		w, next := columnWidth(f.cols, col, colSpanOf(kid.Template))
+		mine := over
+		mine.w = w
+		p.placeAt(kid, frame{x: x, y: f.y, avail: room}, &mine)
+		x, col = x+w, next
+	}
+}
+
+// firstOnly places the first child of a layout this slice does not follow, and
+// says why the rest are not there.
+func (p *placer) firstOnly(kids []*FormNode, lay string, f frame, cols []Measure) {
+	for i, kid := range kids {
+		switch {
+		case lay != "lr-tb":
+			// pdf.js gives rl-tb and rl-row CSS row-reverse
+			// (web/xfa_layer_builder.css:265-273), so even the first child
+			// begins at the container's width less its own.
+			p.rejectAll(kid, fmt.Sprintf(
+				"a %s layout fills from the right, which needs a width not computed here", lay))
+		case i > 0:
+			p.rejectAll(kid, fmt.Sprintf(
+				"a %s layout wraps its children onto lines, and where the one before it ends is not computed here", lay))
+		default:
+			// pdf.js accumulates from nought — extra.height starts at 0 and
+			// the first child is pushed before anything is added to it
+			// (layout.js:145-160) — so the first child of an lr-tb sits at the
+			// container's own origin. That is the flow algorithm's own answer
+			// for one child, not an approximation.
+			p.placeAt(kid, frame{x: f.x, y: f.y, avail: f.avail, cols: cols}, nil)
+		}
+	}
 }
 
 // contained is a container's children as layout sees them. A subformSet is not
@@ -348,27 +500,34 @@ func contained(n *FormNode) []*FormNode {
 
 // leaf places a field or a draw, which is where a form's width and height stop
 // being optional. anchor says whether the element's own anchorType and rotate
-// apply, which they do not when a flow layout put it where it is.
-func (p *placer) leaf(n *FormNode, x, y Measure, anchor bool) {
+// apply, which they do not when a flow layout put it where it is; over is the
+// size a row imposes in place of the template's, or nil.
+func (p *placer) leaf(n *FormNode, f frame, anchor bool, over *cell) {
 	w, okW, errW := n.Template.Measure("w")
 	h, okH, errH := n.Template.Measure("h")
+	if over != nil {
+		w, okW, errW = over.w, true, nil
+		if over.stretched {
+			h, okH, errH = over.h, true, nil
+		}
+	}
 	switch {
 	case errW != nil || errH != nil:
 		p.reject(n, fmt.Sprintf("its size is written as w=%q h=%q, which is not a size",
 			n.Template.Get("w"), n.Template.Get("h")))
 	case !okW || !okH:
-		// This is the 0.5% of the corpus that needs text measurement:
 		// pdf.js's layoutNode (html_utils.js:207-288) supplies the missing one
 		// by measuring the content, and there is no other fallback.
 		p.reject(n, "the template does not write its "+missing(okW, okH)+
 			", which only measuring its text would give")
 	default:
-		r, rotate := Rect{X: x, Y: y, W: w, H: h}, 0
+		r, rotate := Rect{X: f.x, Y: f.y, W: w, H: h}, 0
 		if anchor {
-			r, rotate = transformedBBox(n.Template, x, y, w, h)
+			r, rotate = transformedBBox(n.Template, f.x, f.y, w, h)
 		}
 		p.page.Boxes = append(p.page.Boxes, Box{
-			Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate, Value: n.Value,
+			Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate,
+			Value: n.Value, Hidden: hidden(n.Template),
 		})
 	}
 }
@@ -413,6 +572,13 @@ func (p *placer) rejectAll(n *FormNode, why string) {
 			p.reject(k, why)
 		}
 	})
+}
+
+// rejectKids records every field and draw under each of a list of containers.
+func (p *placer) rejectKids(kids []*FormNode, why string) {
+	for _, k := range kids {
+		p.rejectAll(k, why)
+	}
 }
 
 // layoutOf is the layout a container imposes on its children.

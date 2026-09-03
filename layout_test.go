@@ -335,7 +335,7 @@ func TestEveryFlowLayoutIsNamedInItsReason(t *testing.T) {
 		// The ones that fill from the left place their first child; the ones
 		// that fill from the right place neither.
 		want := 0
-		if firstAtOrigin[lay] {
+		if lay == "lr-tb" {
 			want = 1
 		}
 		if len(l.Pages[0].Boxes) != want {
