@@ -358,7 +358,7 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 			if u.Kind == "field" {
 				uf++
 				why[u.Why]++
-				if u.Why == overflows {
+				if u.Why == tooTallForAPage {
 					pastTheBottom++
 				}
 			} else {

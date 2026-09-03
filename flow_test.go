@@ -257,16 +257,18 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 	}
 }
 
-func TestWhatDoesNotFitIsReportedRatherThanDrawnOffTheBottom(t *testing.T) {
+func TestWhatDoesNotFitGoesOntoTheNextPage(t *testing.T) {
 	// The content area is 20 points tall. A and B fill it exactly; C would
-	// begin below it, and pdf.js would carry C onto the next page.
+	// begin below it, so it opens a second sheet and begins again at its top.
 	l := laidOut(t, page(`w="500pt" h="20pt"`, `
 	  <draw name="A" w="1pt" h="12pt"/>
 	  <draw name="B" w="1pt" h="8pt"/>
 	  <draw name="C" w="1pt" h="5pt"/>
 	  <draw name="D" w="1pt" h="5pt"/>`))
-	same(t, "the page", laid(l), []string{"draw f.A 0,0 1x12", "draw f.B 0,12 1x8"})
-	same(t, "what was left off", notLaid(l), []string{"f.C: " + overflows, "f.D: " + overflows})
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.A 0,0 1x12", "0: draw f.B 0,12 1x8",
+		"1: draw f.C 0,0 1x5", "1: draw f.D 0,5 1x5"})
+	same(t, "what was left off", notLaid(l), nil)
 }
 
 func TestTheSlopAStackIsAllowed(t *testing.T) {
@@ -298,8 +300,10 @@ func TestTheRoomAStackHasIsTheRoomItWasGiven(t *testing.T) {
 	l := laidOut(t, page(`w="500pt" h="500pt"`, `
 	  <subform name="S" layout="tb" h="10pt">
 	    <draw name="A" w="1pt" h="9pt"/><draw name="B" w="1pt" h="9pt"/></subform>`))
-	same(t, "the page", laid(l), []string{"draw f.S.A 0,0 1x9"})
-	same(t, "what was left off", notLaid(l), []string{"f.S.B: " + overflows})
+	// S may be split, so B is not refused: the sheet turns and S begins again
+	// at the top of the next one with its ten points of room back.
+	same(t, "the sheets", byPage(l), []string{"0: draw f.S.A 0,0 1x9", "1: draw f.S.B 0,0 1x9"})
+	same(t, "what was left off", notLaid(l), nil)
 }
 
 func TestAContentAreaWithNoHeightBoundsNothing(t *testing.T) {
