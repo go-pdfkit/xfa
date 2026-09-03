@@ -889,20 +889,22 @@ func collect(p *placer, n *FormNode, wide Measure, row containerHeight, out map[
 		}
 	}
 	var into containerHeight
+	var cols []Measure
 	lay := layoutOf(n)
-	if lay == "row" || lay == "rl-row" {
+	isRow := lay == "row" || lay == "rl-row"
+	if isRow {
 		h, why := p.contentHeight(n, wide)
 		into = containerHeight{h: h, measured: why == "", stretched: true}
+		cols = p.colsOf(n)
 	}
 	inner := noWidth
 	if in, ok := marginOf(n.Template); ok {
 		inner = innerWide(n, wide, 0, lay, in)
 	}
-	cols := p.colsOf(n)
 	col := 0
 	for _, k := range contained(n) {
 		kw := inner
-		if lay == "row" || lay == "rl-row" {
+		if isRow {
 			kw = noWidth
 			if len(cols) > 0 {
 				kw = remainingWide(cols, col)

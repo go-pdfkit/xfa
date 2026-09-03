@@ -45,8 +45,9 @@ func boundByTheRoom(large string) string {
 
 // noWidthToBreakAt is why a leaf with text is still not measured: there is no
 // width to break its lines at. See [noWidth].
-const noWidthToBreakAt = "its height would come from breaking its text into lines, and there is " +
-	"no width to break them at: it is a cell of a row whose container writes no columnWidths"
+const noWidthToBreakAt = "its height would come from breaking its text into lines, and nothing " +
+	"above it says how wide they may be: a container writes a width that is not a length, or it " +
+	"is a cell of a row whose container writes no columnWidths"
 
 // marginNotLengths is why a leaf nobody can measure is not measured. A margin
 // is taken off the width its text is broken at and added to the height that

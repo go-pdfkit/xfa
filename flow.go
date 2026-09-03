@@ -323,15 +323,11 @@ func (p *placer) contentHeight(n *FormNode, wide Measure) (Measure, string) {
 // colsOf is the columnWidths a row cuts its cells from: the ones the container
 // above it writes ($getSubformParent().columnWidths, template.js:5096-5099).
 func (p *placer) colsOf(n *FormNode) []Measure {
-	up, ok := p.up[n]
-	if !ok {
-		// A row with nothing above it: the outermost subform itself. pdf.js
-		// reads $getSubformParent().columnWidths with no guard
-		// (template.js:5096) and the outermost subform's parent is the
-		// template root, which has none.
-		return nil
-	}
-	cols, _ := columnWidths(up.Template)
+	// Every container of the form is in the map, the outermost subform
+	// included: its parent is the <template> element, which writes no columns.
+	// pdf.js reads $getSubformParent().columnWidths with no guard
+	// (template.js:5096) and gets the same answer from the same place.
+	cols, _ := columnWidths(p.up[n].Template)
 	return cols
 }
 

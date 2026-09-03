@@ -221,7 +221,7 @@ func Place(form *Form) *Layout {
 		// break to it (template.js:5474-5477), so it must not fire again.
 		p.fired[breakKey{consumed, false}] = true
 	}
-	p.mapUp(root)
+	p.mapUp(form.Root)
 	p.openArea(area, 0, true)
 	if len(contentAreas(area)) == 0 {
 		// pdf.js filters the page's children for the content area's div and
@@ -663,18 +663,6 @@ func (p *placer) leaf(n *FormNode, f frame, anchor bool, over *cell) {
 		Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate,
 		Value: n.Value, Hidden: hidden(n.Template),
 	})
-}
-
-// missing names which of the two a template left out.
-func missing(okW, okH bool) string {
-	switch {
-	case !okW && !okH:
-		return "width or its height"
-	case !okW:
-		return "width"
-	default:
-		return "height"
-	}
 }
 
 // reject records one element this did not place.
