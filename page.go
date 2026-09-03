@@ -78,9 +78,17 @@ func newPager(root *FormNode) *pager {
 		number:    1,
 		restarted: map[*FormNode]bool{},
 	}
-	p.top = firstOfKind(root, "pageSet")
-	if p.top != nil {
-		p.index(p.top)
+	// Every page set under the outermost subform is indexed, not only the one
+	// the form starts from. pdf.js walks real parent pointers, so a break that
+	// names a page area of a second page set by its id lands somewhere it can
+	// still ask for a next page; here the parents have to be recorded first.
+	for _, k := range root.Kids {
+		if k.Kind == "pageSet" {
+			if p.top == nil {
+				p.top = k
+			}
+			p.index(k)
+		}
 	}
 	return p
 }
@@ -125,7 +133,10 @@ func (p *pager) first(root *FormNode) (*FormNode, *FormNode) {
 	}
 	area, consumed := areas[0], (*FormNode)(nil)
 	if br, target := openingBreak(root); br != nil {
-		if t, idx := p.resolve(root, target); t != nil && t.Kind == "pageArea" && idx < 0 {
+		// The sequence must hold it: a page area named by id can be anywhere
+		// in the form, and one that is not under a page set has no page set to
+		// ask for the sheet after it.
+		if t, idx := p.resolve(root, target); t != nil && t.Kind == "pageArea" && idx < 0 && p.within[t] != nil {
 			area, consumed = t, br
 		}
 	}

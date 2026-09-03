@@ -8,7 +8,6 @@ package xfa
 import (
 	"fmt"
 	"math"
-	"strings"
 )
 
 // A level is one container of the chain currently being flowed: the run of
@@ -41,21 +40,28 @@ type level struct {
 	cols                 []Measure
 }
 
-// splittable says a container may be broken across a page boundary, so that
-// the children before the break stay where they are and the rest go on.
+// flowable says a container is one this slice carries across a page boundary:
+// its children before the break stay where they are and the rest go on.
 //
-// pdf.js's rule (Subform[$isSplittable], template.js:4940-4975): not a
-// positioned layout, not a row, and not kept intact. A container that fails it
-// moves whole. The last clause is not decoration — 1 355 elements in the
-// corpus carry keep intact="contentArea", which is a designer saying "do not
-// let this table row land half on one page and half on the next".
+// pdf.js's rule (Subform[$isSplittable], template.js:4940-4975) is: not a
+// positioned layout, not a row, and not kept intact. This is that rule with
+// the first two clauses stated the other way round — only tb and table stack
+// downwards, which is the only direction this package computes — so it also
+// refuses lr-tb and rl-tb, which pdf.js would split and whose height this
+// package cannot arrive at in the first place.
+//
+// The keep clause is not decoration: 1 355 elements in the corpus carry keep
+// intact="contentArea", which is a designer saying "do not let this table row
+// land half on one page and half on the next". A container that fails the test
+// moves in one piece.
 //
 // The enclosing chain matters too, and is handled by construction rather than
 // by a test: this is only ever asked of a container the flow has already
-// reached, and the flow only reaches through splittable ones.
-func splittable(n *FormNode) bool {
-	lay := layoutOf(n)
-	if lay == "position" || strings.Contains(lay, "row") {
+// reached, and the flow only reaches through containers that pass it.
+func flowable(n *FormNode) bool {
+	switch layoutOf(n) {
+	case "tb", "table":
+	default:
 		return false
 	}
 	switch n.Template.Child("keep").Get("intact") {
@@ -63,18 +69,6 @@ func splittable(n *FormNode) bool {
 		return false
 	}
 	return true
-}
-
-// flowable says a container is one this slice carries across pages: it stacks
-// downwards, which is the only direction this package computes, and it may be
-// split.
-func flowable(n *FormNode) bool {
-	switch n.Kind {
-	case "field", "draw":
-		return false
-	}
-	lay := layoutOf(n)
-	return (lay == "tb" || lay == "table") && splittable(n)
 }
 
 // contentAreas are the boxes a page area offers the body, in order.

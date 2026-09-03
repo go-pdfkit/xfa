@@ -190,3 +190,170 @@ func TestTheFurnitureIsDrawnOnEverySheetItsPageAreaMakes(t *testing.T) {
 		"1: draw f.P.Rule 0,0 1x1", "1: draw f.A1 0,0 1x15",
 		"2: draw f.P.Rule 0,0 1x1", "2: draw f.A2 0,0 1x15"})
 }
+
+// twoAreas is a page area of two content areas, one above the other, so that a
+// sheet can be filled twice before it is turned.
+func twoAreas(name string) string {
+	return `<pageArea name="` + name + `"><medium long="1000pt" short="1000pt"/>` +
+		`<contentArea name="Top" x="0pt" y="0pt" w="500pt" h="20pt"/>` +
+		`<contentArea name="Low" x="100pt" y="200pt" w="500pt" h="20pt"/></pageArea>`
+}
+
+func TestASheetIsFilledContentAreaByContentAreaBeforeItIsTurned(t *testing.T) {
+	l := laidOut(t, sheets(`>`+twoAreas("P"), bricks(5, "15")))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.A0 0,0 1x15",
+		"0: draw f.A1 100,200 1x15",
+		"1: draw f.A2 0,0 1x15",
+		"1: draw f.A3 100,200 1x15",
+		"2: draw f.A4 0,0 1x15"})
+	if n := len(l.Pages[0].Areas); n != 2 {
+		t.Errorf("the sheet offers %d content areas, want 2", n)
+	}
+}
+
+func TestABreakToAContentAreaStaysOnTheSheet(t *testing.T) {
+	l := laidOut(t, sheets(`>`+twoAreas("P"), `
+	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="contentArea" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.F.A 0,0 1x5", "0: draw f.S.B 100,200 1x5"})
+}
+
+func TestAStackWithNoSheetLeftReportsWhatIsLeftOver(t *testing.T) {
+	// The one page area may make one sheet, and the third brick does not fit
+	// on it.
+	l := laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea w="500pt" h="25pt"/></pageArea>`, bricks(3, "10")))
+	same(t, "the sheets", byPage(l), []string{"0: draw f.A0 0,0 1x10", "0: draw f.A1 0,10 1x10"})
+	same(t, "what was left off", notLaid(l), []string{"f.A2: " + noNextPage})
+}
+
+func TestABreakWithNowhereToGoStopsRatherThanPretending(t *testing.T) {
+	// The page area may make one sheet and the break asks for another.
+	l := laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="pageArea" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>
+	  <draw name="C" w="1pt" h="5pt"/>`))
+	same(t, "the sheets", byPage(l), []string{"0: draw f.F.A 0,0 1x5"})
+	same(t, "what was left off", notLaid(l), []string{"f.S.B: " + noNextPage, "f.C: " + noNextPage})
+
+	// The same for a break AFTER a child, and for one on the outermost subform
+	// itself, where there is nothing to lay out at all.
+	l = laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	  <subform name="S" layout="tb"><breakAfter targetType="pageArea" startNew="1"/>
+	    <draw name="A" w="1pt" h="5pt"/></subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	same(t, "what was left off after a breakAfter", notLaid(l), []string{"f.B: " + noNextPage})
+
+	// And for the deprecated <break after=...>, which is read as a breakAfter.
+	l = laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	  <subform name="S" layout="tb"><break after="pageArea" startNew="1"/>
+	    <draw name="A" w="1pt" h="5pt"/></subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	same(t, "a deprecated break after", notLaid(l), []string{"f.B: " + noNextPage})
+}
+
+func TestADeprecatedBreakCanChooseTheSheetTheFormStartsOn(t *testing.T) {
+	l := laidOut(t, `<template><subform name="f" layout="tb">
+	  <break before="pageArea" beforeTarget="P2"/>
+	  <pageSet>`+sheet("P1", "", "100", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "100", `<draw name="Two" w="1pt" h="1pt"/>`)+`</pageSet>
+	  <draw name="A" w="1pt" h="5pt"/></subform></template>`)
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P2.Two 0,0 1x1", "0: draw f.A 0,0 1x5"})
+}
+
+func TestASecondPageSetIsStillSomewhereABreakCanReach(t *testing.T) {
+	// The break names, by id, a page area of a SECOND page set — one the form
+	// does not start from, because pdf.js reads pageAreas from the first
+	// (template.js:5443). It is still a page area with a page set around it,
+	// so the form can start there and go on from there.
+	l := laidOut(t, `<template><subform name="f" layout="tb">
+	  <breakBefore targetType="pageArea" target="#two"/>
+	  <pageSet>`+sheet("P1", "", "100", "")+`</pageSet>
+	  <pageSet>`+sheet("P2", `id="two"`, "20", "")+`</pageSet>
+	  `+bricks(3, "15")+`</subform></template>`)
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.A0 0,0 1x15", "1: draw f.A1 0,0 1x15", "2: draw f.A2 0,0 1x15"})
+}
+
+func TestAPageAreaWithNoPageSetAroundItIsNowhereToGoOn(t *testing.T) {
+	// A page area written outside every page set. A break can name it by id
+	// and the form can be put on it — pdf.js would too — but nothing holds a
+	// sequence it belongs to, so there is no sheet after it.
+	l := laidOut(t, `<template><subform name="f" layout="tb">
+	  <pageSet>`+sheet("P1", "", "20", "")+`</pageSet>
+	  `+sheet("Loose", `id="two"`, "20", "")+`
+	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="pageArea" target="#two"/>
+	    `+bricks(3, "15")+`</subform></subform></template>`)
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.F.A 0,0 1x5", "1: draw f.S.A0 0,0 1x15"})
+	same(t, "what was left off", notLaid(l), []string{
+		"f.S.A1: " + noNextPage, "f.S.A2: " + noNextPage})
+}
+
+func TestWhatANestedContainerCannotFitInsideItselfIsReported(t *testing.T) {
+	// The inner subform stacks and may be split, but it writes ten points of
+	// its own height and B is twenty tall — so B fits nowhere inside it, and
+	// turning the page would not help: In would have ten points again. The
+	// sheet is not turned for something a fresh one could not hold either.
+	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
+	  <subform name="Out" layout="tb">
+	    <subform name="In" layout="tb" h="10pt">
+	      <draw name="A" w="1pt" h="9pt"/><draw name="B" w="1pt" h="20pt"/></subform>
+	    <draw name="C" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.Out.In.A 0,0 1x9", "0: draw f.Out.C 0,10 1x5"})
+	same(t, "what was left off", notLaid(l), []string{"f.Out.In.B: " + noRoomInside})
+}
+
+func TestASheetSmallerThanTheOneBeforeItCanStillBeTooSmall(t *testing.T) {
+	// P1 has room for the brick and P2 does not. The brick fits no room left
+	// on P1, so the sheet turns — and on P2 it does not fit at all.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "30", `<occur max="1"/>`)+sheet("P2", "", "10", ""), `
+	  <draw name="A" w="1pt" h="20pt"/><draw name="B" w="1pt" h="20pt"/>`))
+	same(t, "the sheets", byPage(l), []string{"0: draw f.A 0,0 1x20"})
+	same(t, "what was left off", notLaid(l), []string{"f.B: " + tooTallForAPage})
+}
+
+func TestAMarginNobodyCanReadStopsTheContainerRatherThanTheForm(t *testing.T) {
+	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
+	  <subform name="Bad" layout="tb"><margin topInset="=1"/>
+	    <draw name="A" w="1pt" h="5pt"/></subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	same(t, "the sheets", byPage(l), []string{"0: draw f.B 0,0 1x5"})
+	same(t, "what was left off", notLaid(l),
+		[]string{"f.Bad.A: the container that stacks it writes a margin that is not in lengths"})
+}
+
+func TestAnOriginNobodyCanReadStopsTheWholeBody(t *testing.T) {
+	l := laidOut(t, `<template><subform name="f" layout="tb" x="=1">
+	  <pageSet>`+sheet("P", "", "100", "")+`</pageSet>
+	  <draw name="A" w="1pt" h="5pt"/></subform></template>`)
+	same(t, "what was left off", notLaid(l),
+		[]string{`f.A: its origin is written as x="=1" y="", which is not a place`})
+}
+
+func TestOneHeightNobodyCanArriveAtStopsEveryStackAboveIt(t *testing.T) {
+	// A draw with no height stops the stack it is in AND every stack above it:
+	// where the one after it begins is this one's height, and so is where the
+	// container's next sibling begins.
+	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
+	  <subform name="In" layout="tb">
+	    <draw name="A" w="1pt"/><draw name="B" w="1pt" h="5pt"/></subform>
+	  <draw name="C" w="1pt" h="5pt"/>`))
+	same(t, "the sheets", byPage(l), nil)
+	same(t, "what was left off", notLaid(l), []string{
+		"f.In.A: " + noHeightWritten,
+		"f.In.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
+			noHeightWritten,
+		"f.C: a tb layout stacks its children, and the height of the one above it is not computed: " +
+			noHeightWritten})
+}
