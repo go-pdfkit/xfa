@@ -320,8 +320,9 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 
 	var tmplCount [4]int
 	var expandedFields, expandedDraws, placedFields, placedDraws, pastTheBottom int
+	var pages, furniture, furnitureOff int
 	why := map[string]int{}
-	shortfall := map[string]int{}
+
 	for _, name := range names {
 		tmpl := readNode(t, name, true)
 		if tmpl == nil {
@@ -331,8 +332,17 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 		stem := strings.TrimSuffix(name, ".template.xml")
 		form := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
 
+		// The body and the paper are counted apart. A page area's own
+		// furniture is drawn on every sheet that page area makes, so it is the
+		// one thing that is not in one-to-one correspondence with the boxes on
+		// the paper, and counting it in would hide a real leak behind it.
+		body := map[*FormNode]bool{}
 		ef, ed := 0, 0
+		bodyOf(form.Root, body)
 		form.Root.Walk(func(k *FormNode) {
+			if !body[k] {
+				return
+			}
 			switch k.Kind {
 			case "field":
 				ef++
@@ -344,24 +354,39 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 		expandedDraws += ed
 
 		l := Place(form)
+		pages += len(l.Pages)
 		pf, pd, uf, ud := 0, 0, 0, 0
+		seen := map[*FormNode]bool{}
 		for _, p := range l.Pages {
 			for _, b := range p.Boxes {
-				if b.Kind == "field" {
+				switch {
+				case !body[b.Node]:
+					// Furniture: it may be on many sheets, and is counted once.
+					if !seen[b.Node] {
+						seen[b.Node] = true
+						furniture++
+					}
+				case b.Kind == "field":
 					pf++
-				} else {
+				default:
 					pd++
 				}
 			}
 		}
 		for _, u := range l.Unplaced {
-			if u.Kind == "field" {
+			if seen[u.Node] {
+				t.Errorf("%s: %s is both placed and unplaced", filepath.Base(stem), u.Path)
+			}
+			switch {
+			case !body[u.Node]:
+				furnitureOff++
+			case u.Kind == "field":
 				uf++
 				why[u.Why]++
-				if u.Why == tooTallForAPage {
+				if u.Why == tooTallForAPage || u.Why == noNextPage || u.Why == noRoomInside {
 					pastTheBottom++
 				}
-			} else {
+			default:
 				ud++
 			}
 		}
@@ -371,19 +396,18 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 		}
 		placedFields += pf
 		placedDraws += pd
-		shortfall[filepath.Base(stem)] = pf
 	}
 
 	t.Logf("template: %d fields — %d position with a literal size, %d flow, %d needing measurement",
 		tmplCount[3], tmplCount[0], tmplCount[1], tmplCount[2])
-	t.Logf("expanded: %d fields, %d draws", expandedFields, expandedDraws)
-	t.Logf("PLACED:   %d fields, %d draws", placedFields, placedDraws)
-	// The one-page bound is not arithmetic. A field reported past the bottom
-	// is one whose place this slice computed and then declined to draw off the
-	// sheet, so the two together say how far the heights themselves reach.
-	t.Logf("          %d more fields have a place computed for them that falls past the bottom of the "+
-		"one content area this lays out: the arithmetic reaches %d of %d",
-		pastTheBottom, placedFields+pastTheBottom, expandedFields)
+	t.Logf("expanded: %d fields, %d draws in the body", expandedFields, expandedDraws)
+	t.Logf("PLACED:   %d fields, %d draws, on %d pages", placedFields, placedDraws, pages)
+	t.Logf("          %d page-area elements drawn as furniture, %d on no page at all",
+		furniture, furnitureOff)
+	// What the page machinery itself could not reach, as against what waits on
+	// a height no arithmetic gives.
+	t.Logf("          %d more fields have a place computed and nowhere to put it: no further page, "+
+		"or taller than a whole content area", pastTheBottom)
 	type kv struct {
 		k string
 		n int
@@ -808,5 +832,18 @@ func logWorst(t *testing.T, worst map[string]int) {
 			break
 		}
 		t.Logf("  %6d in %s", e.n, e.k)
+	}
+}
+
+// bodyOf marks every node of the form that is the body rather than the paper.
+// What is under a page set describes a sheet, and is drawn once per sheet that
+// page area makes rather than once per element.
+func bodyOf(n *FormNode, into map[*FormNode]bool) {
+	if n.Kind == "pageSet" {
+		return
+	}
+	into[n] = true
+	for _, k := range n.Kids {
+		bodyOf(k, into)
 	}
 }

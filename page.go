@@ -32,11 +32,15 @@ import "strings"
 // the end of their lists, every test fails again, and the call repeats for
 // ever on unchanged state. It is a real defect on real files.
 //
-// The fix here is to make the clean mean what its name says: it resets this
-// page set's own indices too, so the sequence starts again from the first page
-// area rather than recursing. That terminates, and it terminates on the seven
-// forms pdf.js dies on. A page set holding no page area and no page set at all
-// can still produce nothing, and says so rather than looping.
+// The defect is not in that one branch. The branch above it does the same
+// thing — a page set whose <occur> still allows another run resets its own
+// indices and calls itself, and comes back to the same place when every page
+// area below it has spent its own <occur>. That is the shape a faithful port
+// has to guard: EVERY way a page set can start itself again, not the one that
+// happens to be named after cleaning. So a page set may restart at most once
+// per request for a page, and a page set holding neither a page area nor a
+// page set says so rather than looping. Both were found by porting the
+// machine and running it, not by reading it.
 type pager struct {
 	// areas is the page set the form starts from: the outermost subform's
 	// first, which is the one pdf.js reads (template.js:5443).
@@ -51,10 +55,10 @@ type pager struct {
 	// number is pdf.js's [$extra].pageNumber, which the parity of a duplex or
 	// simplex page set is read from (template.js:4207-4209).
 	number int
-	// cleaned guards the reset branch within one call, so that a page set
-	// which comes back to the same exhausted state after a reset says there
+	// restarted guards the one branch that can return to unchanged state, so
+	// that a page set which exhausts itself twice in the same call says there
 	// is no next page instead of recursing.
-	cleaned map[*FormNode]bool
+	restarted map[*FormNode]bool
 }
 
 // A setState is what a page set remembers between pages: how many times it has
@@ -68,11 +72,11 @@ type setState struct {
 // newPager reads the page sets under a form's outermost subform.
 func newPager(root *FormNode) *pager {
 	p := &pager{
-		within:  map[*FormNode]*FormNode{},
-		sets:    map[*FormNode]*setState{},
-		used:    map[*FormNode]int{},
-		number:  1,
-		cleaned: map[*FormNode]bool{},
+		within:    map[*FormNode]*FormNode{},
+		sets:      map[*FormNode]*setState{},
+		used:      map[*FormNode]int{},
+		number:    1,
+		restarted: map[*FormNode]bool{},
 	}
 	p.top = firstOfKind(root, "pageSet")
 	if p.top != nil {
@@ -156,7 +160,7 @@ func openingBreak(root *FormNode) (*FormNode, string) {
 // its pages in order hands the same page area back for as long as its <occur>
 // allows, and otherwise asks the page set for the next one.
 func (p *pager) next(from *FormNode) *FormNode {
-	p.cleaned = map[*FormNode]bool{}
+	p.restarted = map[*FormNode]bool{}
 	return p.afterArea(from)
 }
 
@@ -193,6 +197,15 @@ func (p *pager) afterSet(set *FormNode) *FormNode {
 		// rather than an answer.
 		return nil
 	}
+	// Everything below has been offered and refused. What is left is to start
+	// the page set again — which is the ONE thing that can come back here on
+	// state no different from the state it left, and so the one thing that has
+	// to be done at most once. See the note on [pager]: pdf.js does it without
+	// a guard and exhausts its stack on seven forms of the corpus.
+	if p.restarted[set] {
+		return nil
+	}
+	p.restarted[set] = true
 	if p.setUsable(set) {
 		st.numberOfUse++
 		st.pageIndex, st.pageSetIndex = -1, -1
@@ -201,11 +214,6 @@ func (p *pager) afterSet(set *FormNode) *FormNode {
 	if parent := p.within[set]; parent != nil {
 		return p.afterSet(parent)
 	}
-	// pdf.js recurses here for ever. See the note on [pager].
-	if p.cleaned[set] {
-		return nil
-	}
-	p.cleaned[set] = true
 	p.clean(set)
 	return p.afterSet(set)
 }
