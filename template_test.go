@@ -54,11 +54,11 @@ func TestATemplateIsReadAsATree(t *testing.T) {
 	if area == nil {
 		t.Fatal("no content area")
 	}
-	if got := measureOr(area.Get("w"), 0).Points(); got != 576 {
-		t.Errorf("the content area is %v points wide", got)
+	if got, ok, err := area.Measure("w"); !ok || err != nil || got.Points() != 576 {
+		t.Errorf("the content area is %v points wide (%v, %v)", got.Points(), ok, err)
 	}
-	if got := measureOr(area.Get("x"), 0).Points(); got != 18 {
-		t.Errorf("its origin is at x=%v points", got)
+	if got, ok, err := area.Measure("x"); !ok || err != nil || got.Points() != 18 {
+		t.Errorf("its origin is at x=%v points (%v, %v)", got.Points(), ok, err)
 	}
 	// The fields, in the order the form places them.
 	body := form.Children("subform")
