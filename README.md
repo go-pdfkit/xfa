@@ -176,11 +176,10 @@ Measured over the same 560 packages:
 | **placed** | **29 123** |
 | draws placed with them | 49 329 |
 | sheets they came to | 1 237 |
-| waiting on the height of one leaf inside the stack | 46 819 |
-| a place computed and nowhere left to put it | 1 608 |
-| under a layout this does not follow | 2 924 |
+| waiting on a height only measuring text would give | 44 246 |
 | a height written as `=0mm`, which is not a length | 3 649 |
-| other | 127 |
+| under a layout this does not follow (`lr-tb`) | 3 124 |
+| a place computed and nowhere left to put it | 1 608 |
 
 ### The prediction was 36 494, and the gap is the finding
 

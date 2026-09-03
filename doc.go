@@ -101,8 +101,10 @@
 //
 //	81 750 fields in the body of the expanded forms
 //	29 123 placed, 49 329 draws with them, on 1 237 sheets
-//	46 819 wait on ONE thing: a draw or a field inside the stack whose height
-//	       only measuring its own text would give
+//	44 246 wait on ONE thing: a height only measuring text would give, nearly
+//	       all of them a leaf ABOVE them in the same stack
+//	 6 773 sit under a layout this does not follow, or below a height written
+//	       as "=0mm", which is not a length
 //	 1 608 have a place computed and nowhere left to put it
 //
 // # What checks it
@@ -127,7 +129,7 @@
 //	23 006 boxes paired on them, every one on the same sheet as pdf.js put it,
 //	       and none on another
 //
-// The 46 819 fields waiting on text measurement are the finding of these two
+// The 44 246 fields waiting on text measurement are the finding of these two
 // slices, and they overturned an earlier count twice. A count over the
 // templates said 446 fields — half of one per cent — need their text measured.
 // Only 8 466 draws and 598 fields of the corpus's 234 000 leaves lack a height,
