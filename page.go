@@ -131,7 +131,13 @@ func (p *pager) first(root *FormNode) (*FormNode, *FormNode) {
 	}
 	p.used[area] = 1
 	set := p.within[area]
-	p.sets[set] = &setState{numberOfUse: 1, pageIndex: indexOfKid(set, area), pageSetIndex: 0}
+	st := &setState{numberOfUse: 1, pageSetIndex: 0}
+	for i, a := range kidsOfKind(set, "pageArea") {
+		if a == area {
+			st.pageIndex = i
+		}
+	}
+	p.sets[set] = st
 	return area, consumed
 }
 
@@ -245,15 +251,18 @@ func (p *pager) byParity(set *FormNode) *FormNode {
 	if len(areas) == 0 {
 		return nil
 	}
-	parity, position := "odd", "rest"
+	// The position is always "rest". pdf.js reads it as pageNumber === 0 ?
+	// "first" : "rest" (template.js:4209) from a page number its own loop sets
+	// to one before the first sheet and increments before ever asking for a
+	// next page — so "first" is a branch of the reference that cannot be
+	// reached, and a branch here that could not be reached either would be a
+	// claim nothing tests.
+	parity := "odd"
 	if p.number%2 == 0 {
 		parity = "even"
 	}
-	if p.number == 0 {
-		position = "first"
-	}
 	for _, want := range [][2]string{
-		{parity, position}, {"any", position}, {"any", "any"},
+		{parity, "rest"}, {"any", "rest"}, {"any", "any"},
 	} {
 		for _, a := range areas {
 			if oddOrEven(a) == want[0] && pagePosition(a) == want[1] {
@@ -345,20 +354,6 @@ func kidsOfKind(n *FormNode, kind string) []*FormNode {
 		}
 	}
 	return out
-}
-
-// indexOfKid is where a child sits among its parent's children of its own
-// kind, or nought when it is not there.
-func indexOfKid(parent, kid *FormNode) int {
-	if parent == nil {
-		return 0
-	}
-	for i, k := range kidsOfKind(parent, kid.Kind) {
-		if k == kid {
-			return i
-		}
-	}
-	return 0
 }
 
 // resolve finds what a break's target names, among the page areas and the
