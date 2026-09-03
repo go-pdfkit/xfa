@@ -168,8 +168,18 @@ func TestWhatARowDoesWithTheAwkwardCases(t *testing.T) {
 		{"a cell whose height nobody can measure leaves the row unstretched",
 			`<subform name="T" layout="table" columnWidths="10pt 20pt">
 			   <subform name="R" layout="row"><draw name="A" w="1pt" h="4pt"/>
-			     <draw name="B" w="1pt"/></subform></subform>`,
+			     <draw name="B" w="1pt" maxH="9pt"/></subform></subform>`,
+			// A keeps its own four points rather than being stretched to a
+			// row height nobody can arrive at.
 			[]string{"draw f.T.R.A 0,0 10x4"}},
+		{"a cell with no height and nothing to measure is as tall as its minH",
+			`<subform name="T" layout="table" columnWidths="10pt 20pt">
+			   <subform name="R" layout="row"><draw name="A" w="1pt" h="4pt"/>
+			     <draw name="B" w="1pt" minH="7pt"/></subform></subform>`,
+			// pdf.js's computeBbox fills the height in from minH
+			// (html_utils.js:310-319), so the row is seven points tall and
+			// both cells are stretched to it.
+			[]string{"draw f.T.R.A 0,0 10x7", "draw f.T.R.B 10,0 20x7"}},
 		{"a cell that is itself a container",
 			`<subform name="T" layout="table" columnWidths="10pt">
 			   <subform name="R" layout="row"><subform name="Cell">
@@ -190,13 +200,16 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 		body string
 		want []string
 	}{
-		{"the child whose height is not written is placed, and nothing after it",
-			`<draw name="A" w="1pt" h="5pt"/><draw name="B" w="1pt"/>
+		{"the child whose height cannot be arrived at is placed, and nothing after it",
+			// B has no height, no text to measure one from, and a maxH, which
+			// is the one case pdf.js answers with the room it has rather than
+			// with a number of the template's own.
+			`<draw name="A" w="1pt" h="5pt"/><draw name="B" w="1pt" maxH="9pt"/>
 			 <draw name="C" w="1pt" h="1pt"/>`,
 			[]string{
-				"f.B: the template does not write its height, which only measuring its text would give",
+				"f.B: " + boundByTheRoom("maxH"),
 				"f.C: a tb layout stacks its children, and the height of the one above it is not computed: " +
-					"the template does not write its height, which only measuring its text would give",
+					boundByTheRoom("maxH"),
 			}},
 		{"a height written in something that is not a length",
 			`<draw name="A" w="1pt" h="=0mm"/><draw name="B" w="1pt" h="1pt"/>`,
@@ -352,18 +365,18 @@ func TestAHeightIsMeasuredOnceAndRemembered(t *testing.T) {
 	// The memo is what keeps a form of a dozen levels from being walked once
 	// per level. A node is marked before its children are measured, so a tree
 	// that somehow held itself would stop rather than recurse for ever.
-	p := &placer{heights: map[*FormNode]height{}}
+	p := &placer{heights: map[heightKey]height{}}
 	n := &FormNode{Kind: "draw", Template: &Node{Attr: map[string]string{"h": "5pt"}}}
 	loop := &FormNode{Kind: "subform", Template: &Node{Attr: map[string]string{}}}
 	loop.Kids = []*FormNode{loop}
-	if h, why := p.heightOf(n); h != 5 || why != "" {
+	if h, why := p.heightOf(n, unbounded, 0); h != 5 || why != "" {
 		t.Errorf("first time: %v %q", h, why)
 	}
-	p.heights[n] = height{h: 99}
-	if h, _ := p.heightOf(n); h != 99 {
+	p.heights[heightKey{n, unbounded, 0}] = height{h: 99}
+	if h, _ := p.heightOf(n, unbounded, 0); h != 99 {
 		t.Errorf("it was measured again rather than remembered: %v", h)
 	}
-	if _, why := p.heightOf(loop); why != measuringItself {
+	if _, why := p.heightOf(loop, unbounded, 0); why != measuringItself {
 		t.Errorf("a tree holding itself gave %q", why)
 	}
 }
@@ -396,15 +409,15 @@ func TestARowWhoseCellHasNoHeightHasNoHeightEither(t *testing.T) {
 	// leaves the row unmeasured — and the table above it with it.
 	l := laidOut(t, page(`w="500pt" h="500pt"`, `
 	  <subform name="T" layout="table" columnWidths="10pt 10pt">
-	    <subform name="R" layout="row"><draw name="A" w="1pt"/></subform>
+	    <subform name="R" layout="row"><draw name="A" w="1pt" maxH="9pt"/></subform>
 	  </subform>
 	  <draw name="B" w="1pt" h="5pt"/>`))
 	same(t, "what was left off", notLaid(l), []string{
-		"f.T.R.A: " + noHeightWritten,
+		"f.T.R.A: " + boundByTheRoom("maxH"),
 		// The reason names where the stack actually stopped, which is the table
 		// rather than the subform above it.
 		"f.B: a table layout stacks its children, and the height of the one above it is not computed: " +
-			noHeightWritten})
+			boundByTheRoom("maxH")})
 }
 
 func TestInsideAContainerThatMovesWholeAStackStillStops(t *testing.T) {

@@ -80,6 +80,17 @@
 // and what the template writes for it, so the heights are arrived at from the
 // leaves upwards.
 //
+// A leaf's own height is often not written either, and then it is its TEXT:
+// broken into lines at the width it has, a line count times a line height. See
+// the note on emWidth in text.go for the regime that is measured in, which is
+// pdf.js's own where it resolves no font — one em per character, a first line
+// one em tall and every line after it 1.2 ems. That is not a stand-in for
+// something better: it is what the reference runs on a form whose fonts it
+// cannot resolve, so its numbers and these are the same numbers. Where the
+// text is the XHTML of a rich value it is walked in the order the markup
+// writes it, since half of the corpus's paragraphs hold text both before and
+// after a span.
+//
 // Where the stack runs off the bottom, the page turns. Which page comes next
 // is a state machine rather than "another of the same" — the page set's
 // relation, each page area's occur, the parity of the page number, and the
@@ -90,8 +101,9 @@
 // two is a slice of its own.
 //
 // Everything it does not reach — lr-tb and the two layouts that fill from the
-// right, sizes only text measurement would give, a container taller than any
-// sheet, a form that runs out of pages — comes back in [Layout.Unplaced] with
+// right, a height written as an expression rather than a length, a container
+// taller than any sheet, a form that runs out of pages — comes back in
+// [Layout.Unplaced] with
 // the reason written out, one element at a time. Nothing of the body is
 // dropped. A page area's own furniture is drawn once on every sheet that page
 // area makes, which is the one thing not in one-to-one correspondence with the
@@ -100,12 +112,11 @@
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	29 123 placed, 49 329 draws with them, on 1 237 sheets
-//	44 246 wait on ONE thing: a height only measuring text would give, nearly
-//	       all of them a leaf ABOVE them in the same stack
-//	 6 773 sit under a layout this does not follow, or below a height written
-//	       as "=0mm", which is not a length
-//	 1 608 have a place computed and nowhere left to put it
+//	54 708 placed, 106 181 draws with them, on 2 268 sheets
+//	16 936 sit below a height written as "=0mm", which is not a length
+//	 4 303 sit under lr-tb, which wraps its children onto lines
+//	 5 794 have a place computed and nowhere left to put it: taller than a
+//	       whole content area, or past the last sheet the page set gives
 //
 // # What checks it
 //
@@ -120,24 +131,37 @@
 // belongs to — which is a thing it says outright, so the page a box landed on
 // can be compared even where its coordinates cannot:
 //
-//	 7 072 container heights this package computes, all agreeing with pdf.js's
-//	       to within 1/100 pt
-//	   450 boxes placed where pdf.js also emits a place: all agreeing
-//	   199 forms where every element of the body was placed, so that the two
-//	       are laying out the same thing
-//	   198 of those agreeing with pdf.js on the NUMBER of sheets
-//	23 006 boxes paired on them, every one on the same sheet as pdf.js put it,
-//	       and none on another
+//	  7 758 container heights this package computes, all agreeing with pdf.js's
+//	        to within 1/100 pt
+//	    176 boxes placed where pdf.js also emits a place: all agreeing
+//	117 813 more that pdf.js placed by flexbox, of which 115 498 came out at
+//	        the container's own origin, 2 315 below or to the right of it, and
+//	        NONE above or to the left, which would be outside the container
+//	    357 forms where every element of the body was placed, so that the two
+//	        are laying out the same thing
+//	    354 of those agreeing with pdf.js on the NUMBER of sheets
+//	 89 334 boxes paired on them, every one on the same sheet as pdf.js put it,
+//	        and none on another
 //
-// The 44 246 fields waiting on text measurement are the finding of these two
-// slices, and they overturned an earlier count twice. A count over the
-// templates said 446 fields — half of one per cent — need their text measured.
-// Only 8 466 draws and 598 fields of the corpus's 234 000 leaves lack a height,
-// but a stack is a chain, and one unmeasurable height leaves every sibling
-// below it with nowhere to begin. Then the one-page bound was found to be
-// masking more of the same: of the 21 094 fields reported as falling past the
-// bottom of the first sheet, pagination placed 14 077, and a quarter of the
-// rest turned out to sit below a leaf with no written height further down.
+// A box is paired by its whole chain of names and not by its own. Six subforms
+// of us-irs__fw9 are called Bullet1, in three lists on three sheets; once each
+// of them has a height they are six entries of one list, and nothing makes the
+// two lists line up. Pairing on the chain turns a mispairing into an unpaired
+// box rather than into a disagreement.
+//
+// Text measurement was the wall three counts in a row failed to see. A count
+// over the templates said 446 fields — half of one per cent — need their text
+// measured; only 8 466 draws and 598 fields of the corpus's 234 000 leaves
+// lack a height. But a stack is a chain, and one unmeasurable height leaves
+// every sibling below it with nowhere to begin: those leaves held up 44 246
+// fields, more than half the corpus. Measuring them places 25 585 more.
+//
+// Two things inside the measurement turned out to decide it, and neither is
+// about fonts. The last no-break space of a run becomes an ORDINARY one
+// (parser.js:61-63), which is where "Form\u00a0AB428" comes apart at the end
+// of a column; without it 31 container heights disagreed. And a leaf whose
+// text gives no height is not left unmeasured: computeBbox fills it in from
+// minH (html_utils.js:290-324) and the stack above adds that.
 //
 // [Values] and [FieldNames] remain what they were — what the data says, and
 // what the template says, each on its own — for a caller that wants one side

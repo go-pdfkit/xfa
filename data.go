@@ -22,7 +22,7 @@ import (
 // wrapper carries the package's plumbing, and every path into the form starts
 // below it.
 func ParseDatasets(r io.Reader) (*Node, error) {
-	root, err := parseXML(r)
+	root, err := parseXML(r, false)
 	if err != nil {
 		return nil, fmt.Errorf("xfa: reading the datasets: %w", err)
 	}

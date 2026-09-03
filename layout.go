@@ -201,7 +201,8 @@ func Place(form *Form) *Layout {
 	}
 	p := &placer{
 		layout:  l,
-		heights: map[*FormNode]height{},
+		heights: map[heightKey]height{},
+		up:      map[*FormNode]*FormNode{},
 		root:    root,
 		pager:   newPager(root),
 		fired:   map[breakKey]bool{},
@@ -220,6 +221,7 @@ func Place(form *Form) *Layout {
 		// break to it (template.js:5474-5477), so it must not fire again.
 		p.fired[breakKey{consumed, false}] = true
 	}
+	p.mapUp(form.Root)
 	p.openArea(area, 0, true)
 	if len(contentAreas(area)) == 0 {
 		// pdf.js filters the page's children for the content area's div and
@@ -232,6 +234,16 @@ func Place(form *Form) *Layout {
 	p.rejectUnusedPages(root)
 	p.dropEmptyPages()
 	return l
+}
+
+// mapUp records each container's layout parent, which is where a row reads
+// its columns from. It follows [contained]: a subformSet is transparent and a
+// page set is not a container of the body at all.
+func (p *placer) mapUp(n *FormNode) {
+	for _, k := range contained(n) {
+		p.up[k] = n
+		p.mapUp(k)
+	}
 }
 
 // rejectUnusedPages reports the furniture of every page area the form never
@@ -282,6 +294,17 @@ func contentAvail(content *Node) Measure {
 	return h
 }
 
+// contentWide is the horizontal room a content area gives the body, and no
+// bound where it writes no width. See [contentAvail], which is the same thing
+// downwards.
+func contentWide(content *Node) Measure {
+	w, ok, err := content.Measure("w")
+	if !ok || err != nil {
+		return unbounded
+	}
+	return w
+}
+
 // given is a page's height where the medium wrote one, and no bound where it
 // did not. [pageSize] answers nought for both, because a page of no size is
 // not a page.
@@ -297,9 +320,14 @@ func given(h Measure) Measure {
 type placer struct {
 	layout *Layout
 	root   *FormNode
-	// heights memoises what each node contributes to the stack above it. See
-	// [placer.heightOf].
-	heights map[*FormNode]height
+	// heights memoises what each node contributes to the stack above it, at
+	// the width it has where it sits. See [placer.heightOf].
+	heights map[heightKey]height
+	// up is each container's layout parent, which is where a row reads the
+	// columnWidths it cuts its cells from. It follows the same rule as
+	// [contained]: a subformSet is not a parent, its children belong to the
+	// container above it (template.js:198-206, 4901-4907).
+	up map[*FormNode]*FormNode
 
 	// pager is the sequence of sheets; pageArea and slot are where in it the
 	// flow has got to, and area and avail are that content area's box and the
@@ -309,6 +337,10 @@ type placer struct {
 	slot     int
 	area     Rect
 	avail    Measure
+	// wide is the room the content area gives the body across the page, which
+	// is where a leaf's text is broken. pdf.js hands the body
+	// { width: contentArea.w, height: contentArea.h } (template.js:5550).
+	wide Measure
 	// touched counts, for each sheet, how much of the BODY was laid out on
 	// it. A sheet nothing of the body reached is not shipped; see
 	// [placer.dropEmptyPages].
@@ -338,6 +370,11 @@ type frame struct {
 	// avail is how much vertical room it has: the content area's height, less
 	// whatever the containers between here and there have already spent.
 	avail Measure
+	// wide is how much horizontal room it has, which is what its text is
+	// broken at where the template writes it no width. colW is the width the
+	// columns of an enclosing row give it, or nought where no row does; see
+	// [heightKey].
+	wide, colW Measure
 	// cols are the columnWidths of the container above it, which a row cuts
 	// its cells from and every other layout ignores.
 	cols []Measure
@@ -418,22 +455,32 @@ func (p *placer) children(n *FormNode, f frame) {
 	// ($getSubformParent().columnWidths, template.js:5096-5099), so they are
 	// handed down one level whatever the layout here is.
 	cols, _ := columnWidths(n.Template)
-	switch lay := layoutOf(n); lay {
+	lay := layoutOf(n)
+	// The room the children have across the page. A margin nobody can read
+	// leaves them none rather than none subtracted, so a leaf under it says it
+	// has no width to break its text at instead of being broken at the wrong
+	// one; the stack below rejects the same children again with the margin as
+	// the reason.
+	wide := noWidth
+	if in, ok := marginOf(n.Template); ok {
+		wide = innerWide(n, f.wide, f.colW, lay, in)
+	}
+	switch lay {
 	case "tb", "table":
-		p.stack(n, kids, lay, f, cols)
+		p.stack(n, kids, lay, f, wide, cols)
 	case "row":
 		p.cells(n, kids, f)
 	case "lr-tb", "rl-tb", "rl-row":
-		p.firstOnly(kids, lay, f, cols)
+		p.firstOnly(kids, lay, f, wide, cols)
 	default:
 		for _, kid := range kids {
-			p.place(kid, frame{x: f.x, y: f.y, avail: f.avail, cols: cols})
+			p.place(kid, frame{x: f.x, y: f.y, avail: f.avail, wide: wide, cols: cols})
 		}
 	}
 }
 
 // stack puts a tb or a table container's children one below the other.
-func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, cols []Measure) {
+func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, wide Measure, cols []Measure) {
 	in, ok := marginOf(n.Template)
 	if !ok {
 		p.rejectKids(kids, "the container that stacks it writes a margin that is not in lengths")
@@ -452,12 +499,12 @@ func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, cols 
 	x, y := f.x+in.left, f.y+in.top
 	var off Measure
 	for i, kid := range kids {
-		h, why := p.heightOf(kid)
+		h, why := p.heightOf(kid, wide, 0)
 		if why != "" {
 			// Where this one begins is known exactly, so it is placed. Where
 			// the one after it begins is this one's height, so it is not, and
 			// neither is anything after that.
-			p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, cols: cols}, nil)
+			p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, wide: wide, cols: cols}, nil)
 			p.rejectKids(kids[i+1:], fmt.Sprintf(
 				"a %s layout stacks its children, and the height of the one above it is not computed: %s", lay, why))
 			return
@@ -471,7 +518,7 @@ func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, cols 
 			p.rejectKids(kids[i:], noRoomInside)
 			return
 		}
-		p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, cols: cols}, nil)
+		p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, wide: wide, cols: cols}, nil)
 		off += h
 	}
 }
@@ -486,7 +533,7 @@ func (p *placer) cells(n *FormNode, kids []*FormNode, f frame) {
 	// Every cell is stretched to the row's height, which is the tallest of
 	// them (layout.js:135-143). Where one of them has no height, none of them
 	// is stretched and each keeps its own.
-	tall, why := p.contentHeight(n)
+	tall, why := p.contentHeight(n, f.wide)
 	over := cell{h: tall, stretched: why == ""}
 	room := f.avail
 	if why == "" {
@@ -494,23 +541,29 @@ func (p *placer) cells(n *FormNode, kids []*FormNode, f frame) {
 	}
 	x, col := f.x, 0
 	for _, kid := range kids {
+		// A cell is measured against every column LEFT in the row rather than
+		// against its own, because pdf.js hands it
+		// Math.sumPrecise(columnWidths.slice(currentColumn)) for its space
+		// (layout.js:184-189) and only replaces its width with its own columns
+		// afterwards. See [heightKey].
+		rest := remainingWide(f.cols, col)
 		if hidden(kid.Template) {
 			// pdf.js returns EMPTY before it reads colSpan, so a hidden cell
 			// takes no column and the next one is where it would have been.
-			p.placeAt(kid, frame{x: x, y: f.y, avail: room}, nil)
+			p.placeAt(kid, frame{x: x, y: f.y, avail: room, wide: rest}, nil)
 			continue
 		}
 		w, next := columnWidth(f.cols, col, colSpanOf(kid.Template))
 		mine := over
 		mine.w = w
-		p.placeAt(kid, frame{x: x, y: f.y, avail: room}, &mine)
+		p.placeAt(kid, frame{x: x, y: f.y, avail: room, wide: rest, colW: w}, &mine)
 		x, col = x+w, next
 	}
 }
 
 // firstOnly places the first child of a layout this slice does not follow, and
 // says why the rest are not there.
-func (p *placer) firstOnly(kids []*FormNode, lay string, f frame, cols []Measure) {
+func (p *placer) firstOnly(kids []*FormNode, lay string, f frame, wide Measure, cols []Measure) {
 	for i, kid := range kids {
 		switch {
 		case lay != "lr-tb":
@@ -528,7 +581,7 @@ func (p *placer) firstOnly(kids []*FormNode, lay string, f frame, cols []Measure
 			// (layout.js:145-160) — so the first child of an lr-tb sits at the
 			// container's own origin. That is the flow algorithm's own answer
 			// for one child, not an approximation.
-			p.placeAt(kid, frame{x: f.x, y: f.y, avail: f.avail, cols: cols}, nil)
+			p.placeAt(kid, frame{x: f.x, y: f.y, avail: f.avail, wide: wide, cols: cols}, nil)
 		}
 	}
 }
@@ -566,38 +619,50 @@ func (p *placer) leaf(n *FormNode, f frame, anchor bool, over *cell) {
 			h, okH, errH = over.h, true, nil
 		}
 	}
-	switch {
-	case errW != nil || errH != nil:
+	if errW != nil || errH != nil {
 		p.reject(n, fmt.Sprintf("its size is written as w=%q h=%q, which is not a size",
 			n.Template.Get("w"), n.Template.Get("h")))
-	case !okW || !okH:
-		// pdf.js's layoutNode (html_utils.js:207-288) supplies the missing one
-		// by measuring the content, and there is no other fallback.
-		p.reject(n, "the template does not write its "+missing(okW, okH)+
-			", which only measuring its text would give")
-	default:
-		r, rotate := Rect{X: f.x, Y: f.y, W: w, H: h}, 0
-		if anchor {
-			r, rotate = transformedBBox(n.Template, f.x, f.y, w, h)
+		return
+	}
+	if !okW || !okH {
+		// pdf.js's layoutNode (html_utils.js:207-288) supplies whichever is
+		// missing by measuring the element's own text. It writes back only the
+		// one the template left out — `if (w && this.w === "")`,
+		// `if (h && this.h === "")` (template.js:1909, 1923) — so a leaf that
+		// writes a width and no height keeps the width it wrote.
+		size, why := p.leafSize(n, f.wide, f.colW)
+		if why != "" {
+			p.reject(n, why)
+			return
 		}
-		page := p.cur()
-		page.Boxes = append(page.Boxes, Box{
-			Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate,
-			Value: n.Value, Hidden: hidden(n.Template),
-		})
+		if !okW {
+			if w, okW = size.w, size.hasW; !okW {
+				// pdf.js does not leave it unwritten either. See
+				// [placer.unmeasured].
+				if w, why = p.unmeasured(n, "minW", "maxW", "w"); why != "" {
+					p.reject(n, why)
+					return
+				}
+			}
+		}
+		if !okH {
+			if h, okH = size.h, size.hasH; !okH {
+				if h, why = p.unmeasured(n, "minH", "maxH", "h"); why != "" {
+					p.reject(n, why)
+					return
+				}
+			}
+		}
 	}
-}
-
-// missing names which of the two a template left out.
-func missing(okW, okH bool) string {
-	switch {
-	case !okW && !okH:
-		return "width or its height"
-	case !okW:
-		return "width"
-	default:
-		return "height"
+	r, rotate := Rect{X: f.x, Y: f.y, W: w, H: h}, 0
+	if anchor {
+		r, rotate = transformedBBox(n.Template, f.x, f.y, w, h)
 	}
+	page := p.cur()
+	page.Boxes = append(page.Boxes, Box{
+		Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate,
+		Value: n.Value, Hidden: hidden(n.Template),
+	})
 }
 
 // reject records one element this did not place.
