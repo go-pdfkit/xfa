@@ -62,6 +62,37 @@
 //	80 482 fields placed, 60 865 of them bound to a data node
 //	     0 <bind> expressions holding a construct this does not read
 //
+// # Where a field goes
+//
+// [Expand] joins the two trees and returns the form as a document holds it —
+// one node per occurrence, so a table row written once in the template and
+// filled three times by the data is three nodes. Layout runs over that and
+// never over the template, which is what pdf.js's binder does too and for the
+// same reason (bind.js:61).
+//
+// [Place] then lays a form out on one page under POSITIONED layout: a box's
+// place is its own x and y added to those of every container above it, down
+// from the content area's origin, with anchorType and rotate resolved.
+// Everything it does not reach — flow layouts, sizes only text measurement
+// would give, other page areas — comes back in [Layout.Unplaced] with the
+// reason written out, one element at a time.
+//
+// Measured over the same 560 packages, and against pdf.js's own layout run
+// over the same files:
+//
+//	82 386 fields in the templates, 82 378 in the expanded forms
+//	13 331 placed, 69 047 reported unplaced
+//	   of the unplaced, 68 891 are under a flow layout
+//	21 933 boxes compared with pdf.js, 21 881 agreeing to within 1/100 pt
+//	    47 more differing only by pdf.js's own two-decimal rounding
+//	     5 differing, every one of them a colSpan width and none a place
+//
+// The gap between what is placed and the 70 297 fields whose own enclosing
+// subform is positioned is the finding rather than the shortfall: 556 of the
+// 560 outermost subforms are laid out "tb", so almost every positioned
+// subform hangs below a flow one, and where a flow layout puts its second
+// child is the flow layout itself.
+//
 // [Values] and [FieldNames] remain what they were — what the data says, and
 // what the template says, each on its own — for a caller that wants one side
 // without the other. [Values] names a repeated sibling the way a binding does,

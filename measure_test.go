@@ -22,7 +22,7 @@ func TestALengthIsReadInWhateverUnitItIsWritten(t *testing.T) {
 		{"62mm", 62 * 72 / 25.4},
 		{"1cm", 720 / 25.4},
 		{"6pc", 72},
-		{"96px", 72},
+		{"5000mp", 5},
 		{"612", 612}, // a bare number is points
 		{"-1.5mm", -1.5 * 72 / 25.4},
 		{"  9mm  ", 9 * 72 / 25.4},
@@ -40,27 +40,31 @@ func TestALengthIsReadInWhateverUnitItIsWritten(t *testing.T) {
 }
 
 func TestWhatIsNotALength(t *testing.T) {
-	for _, in := range []string{"", "   ", "mm", "wide", "1.2.3pt", "10furlongs", "5em", "50%"} {
+	for _, in := range []string{"", "   ", "mm", "wide", "1.2.3pt", "10furlongs", "5em", "50%", "96px"} {
 		if _, err := ParseMeasure(in); err == nil {
 			t.Errorf("%q was read as a length", in)
 		}
 	}
 }
 
-func TestALengthThatCannotBeReadFallsBack(t *testing.T) {
-	// A template writes a great many optional lengths, and one written wrongly
-	// is not a reason to refuse the form: a field with an unreadable width is
-	// laid out at its default, which is what a reader does with it.
+func TestAnAttributeIsAbsentOrALengthOrWrong(t *testing.T) {
+	// The three answers are the reason this exists. A layout that cannot tell
+	// "no width" from "width nought" draws the second when it met the first.
+	n := &Node{Attr: map[string]string{"w": "1in", "h": "", "x": "nonsense"}}
 	for _, tc := range []struct {
-		in   string
-		want Measure
+		name    string
+		want    Measure
+		wantOK  bool
+		wantErr bool
 	}{
-		{"", 42},
-		{"nonsense", 42},
-		{"1in", 72},
+		{"w", 72, true, false},
+		{"h", 0, false, false}, // written empty, which XFA means as absent
+		{"y", 0, false, false}, // not written at all
+		{"x", 0, true, true},   // written, and not a length
 	} {
-		if got := measureOr(tc.in, 42); got != tc.want {
-			t.Errorf("measureOr(%q, 42) = %v, want %v", tc.in, got, tc.want)
+		m, ok, err := n.Measure(tc.name)
+		if m != tc.want || ok != tc.wantOK || (err != nil) != tc.wantErr {
+			t.Errorf("Measure(%q) = %v, %v, %v", tc.name, m, ok, err)
 		}
 	}
 }

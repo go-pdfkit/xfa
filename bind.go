@@ -168,6 +168,15 @@ const maxBindings = 1 << 18
 // A nil template gives an empty result; a nil data tree binds nothing, which
 // is what a document nobody has filled in should say.
 func Bind(template, data *Node) *Result {
+	b := newBinder(template, data)
+	return &Result{Fields: b.out, Unsupported: b.unsupported, Truncated: b.truncated}
+}
+
+// newBinder does the whole join. It is one walk, and both of the answers it
+// can be asked for — the flat list [Bind] returns and the tree [Expand]
+// returns — are made as it goes, so the two cannot disagree about which
+// containers a form has.
+func newBinder(template, data *Node) *binder {
 	b := &binder{
 		data:     data,
 		parent:   map[*Node]*Node{},
@@ -186,9 +195,11 @@ func Bind(template, data *Node) *Result {
 		b.emptyMerge = true
 	}
 	if template != nil {
+		b.root = &FormNode{Template: template, Kind: template.Kind, Name: template.Get("name")}
+		b.cur = b.root
 		b.bindElement(template, "", data, 0)
 	}
-	return &Result{Fields: b.out, Unsupported: b.unsupported, Truncated: b.truncated}
+	return b
 }
 
 // bindableKinds are the template elements that can hold data. It is pdf.js's
@@ -235,7 +246,11 @@ type binder struct {
 	// emptyMerge says the data tree holds no records at all.
 	emptyMerge bool
 	// mergeMode is nil until the form's first subform says which way to merge.
-	mergeMode   *bool
+	mergeMode *bool
+	// root is the expanded form, and cur the container being laid out inside.
+	// See [Expand].
+	root        *FormNode
+	cur         *FormNode
 	out         []Binding
 	unsupported []Unsupported
 	truncated   bool
@@ -284,12 +299,25 @@ func (b *binder) bindElement(node *Node, path string, data *Node, depth int) {
 		return
 	}
 	seen := map[string]int{}
+	// A draw is numbered apart from the containers that carry data, so that
+	// adding the form's static text to the expanded tree cannot move a field's
+	// path from "Total" to "Total[1]" behind a caller's back.
+	drawn := map[string]int{}
 	for _, child := range node.Kids {
 		if b.truncated {
 			return
 		}
 		if pageKinds[child.Kind] {
-			b.bindElement(child, place(path, child.Get("name"), seen, 1)[0], data, depth+1)
+			p := place(path, child.Get("name"), seen, 1)[0]
+			prev := b.enter(child, p)
+			b.bindElement(child, p, data, depth+1)
+			b.cur = prev
+			continue
+		}
+		if child.Kind == "draw" {
+			// Static text, rules and boxes: most of what is on the paper, and
+			// nothing a binder has an opinion about.
+			b.leaf(child, place(path, child.Get("name"), drawn, 1)[0])
 			continue
 		}
 		if b.mergeMode == nil && child.Kind == "subform" {
@@ -535,7 +563,10 @@ func (b *binder) bindOccurrences(child *Node, path string, seen map[string]int, 
 
 // bindValue gives one container one data node.
 func (b *binder) bindValue(node *Node, path string, data *Node, depth int) {
+	prev := b.enter(node, path)
+	defer func() { b.cur = prev }()
 	if settableKinds[node.Kind] {
+		defer b.shadow(node, path, depth+1)
 		switch {
 		case isDataValue(data):
 			b.emit(node, path, data, dataValue(data))
@@ -561,6 +592,8 @@ func (b *binder) bindValue(node *Node, path string, data *Node, depth int) {
 // setAndBind records a container that found no data of its own and carries on
 // into its children, which may still find some.
 func (b *binder) setAndBind(node *Node, path string, data *Node, depth int) {
+	prev := b.enter(node, path)
+	defer func() { b.cur = prev }()
 	if settableKinds[node.Kind] {
 		b.emit(node, path, nil, "")
 	}
@@ -569,6 +602,8 @@ func (b *binder) setAndBind(node *Node, path string, data *Node, depth int) {
 
 // emit records one field.
 func (b *binder) emit(node *Node, path string, data *Node, value string) {
+	// b.cur is this container's own node: every path into here has entered it.
+	b.cur.Data, b.cur.Value, b.cur.Bound = data, value, data != nil
 	if len(b.out) >= maxBindings {
 		b.truncated = true
 		return
