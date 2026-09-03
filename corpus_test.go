@@ -403,6 +403,15 @@ type judgeBox struct {
 	W      *float64 `json:"w"`
 	H      *float64 `json:"h"`
 	Turned bool     `json:"turned"`
+	// Flowed says a container above this one laid it out by stacking rather
+	// than by coordinates. pdf.js emits no left or top under a flow layout —
+	// it writes the children into a flexbox column and lets the browser stack
+	// them — so X and Y are then the flow container's own origin and not this
+	// element's place. The dump carries the flag so that a check cannot
+	// mistake the one for the other.
+	Flowed bool `json:"flowed"`
+	// Layout is the CSS class pdf.js gave the container, for a container box.
+	Layout string `json:"layout"`
 }
 
 // TestPlacementAgainstPdfjs checks this package's geometry against pdf.js's,
@@ -425,10 +434,12 @@ type judgeBox struct {
 //
 // # What it does not cover
 //
-//   - Flow layouts. pdf.js hands those to the browser's flexbox and emits no
-//     coordinates for them at all, so it and this package are blind in the
-//     same place. Where this slice reports a field unplaced under a flow
-//     layout, pdf.js has nothing to compare it with.
+//   - Where a flow layout put a box. pdf.js hands those to the browser's
+//     flexbox and emits no coordinates for them at all, so the dump carries
+//     the flow container's origin instead and says so with Flowed. Those are
+//     counted apart, and all that is checked of them is that they lie within
+//     the container rather than above or to the left of it.
+//     [TestFlowHeightsAgainstPdfjs] is the check for the stacking itself.
 //   - Borders, margins and insets, which neither side resolves numerically
 //     here: pdf.js writes them as CSS calc() (html_utils.js:426-443).
 //   - Text measurement, and so every element with no literal size.
@@ -453,7 +464,7 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 		t.Skipf("no templates in %s", dir)
 	}
 	sort.Strings(names)
-	var forms, missing, exact, rounding, differ, unpairable int
+	var forms, missing, exact, rounding, differ, unpairable, atOrigin, below, above int
 	worst := map[string]int{}
 	for _, name := range names {
 		stem := strings.TrimSuffix(name, ".template.xml")
@@ -473,6 +484,9 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 		forms++
 		theirs := map[string][]judgeBox{}
 		for _, b := range dump.Boxes {
+			if b.Kind == "container" {
+				continue
+			}
 			if n := leafName(b.Chain); n != "" {
 				theirs[b.Kind+" "+n] = append(theirs[b.Kind+" "+n], b)
 			}
@@ -493,6 +507,27 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 				continue
 			}
 			for i, m := range ms {
+				if ts[i].Flowed {
+					// pdf.js placed this one by flexbox and emitted no
+					// coordinates for it, so what the dump carries is the
+					// origin of the flow container it is in. What can be said
+					// is one-sided and is worth saying: a stacked box may sit
+					// at that origin, which is where the first child goes, or
+					// below and to the right of it, which is where the rest
+					// do. Above or to the left of it would be a defect.
+					switch {
+					case ts[i].X == nil || ts[i].Y == nil:
+						unpairable++
+					case float64(m.X) < *ts[i].X-0.05 || float64(m.Y) < *ts[i].Y-0.05:
+						above++
+						worst[form]++
+					case float64(m.X) <= *ts[i].X+0.05 && float64(m.Y) <= *ts[i].Y+0.05:
+						atOrigin++
+					default:
+						below++
+					}
+					continue
+				}
 				d, ok := apart(m, ts[i])
 				switch {
 				case !ok:
@@ -517,6 +552,11 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 	}
 	t.Logf("%d forms compared, %d with no dump", forms, missing)
 	t.Logf("%d boxes paired, %d unpairable", paired, unpairable)
+	t.Logf("%d more pdf.js placed by flexbox, where it emits the flow container's origin and no place of its own:",
+		atOrigin+below+above)
+	t.Logf("  at that origin      %6d   (a first child, which is where the flow puts it)", atOrigin)
+	t.Logf("  below or right of it%6d   (stacked after one, which pdf.js does not say where)", below)
+	t.Logf("  ABOVE or LEFT of it %6d   (outside the container: a defect)", above)
 	t.Logf("  agree exactly       %6d  %5.2f%%", exact, 100*float64(exact)/float64(paired))
 	t.Logf("  pdf.js rounding     %6d  %5.2f%%", rounding, 100*float64(rounding)/float64(paired))
 	t.Logf("  DISAGREE            %6d  %5.2f%%", differ, 100*float64(differ)/float64(paired))
@@ -562,4 +602,203 @@ func apart(m Box, t judgeBox) (float64, bool) {
 		}
 	}
 	return d, true
+}
+
+// TestFlowHeightsAgainstPdfjs is the check for what this slice adds, and it
+// exists because the check above cannot reach it.
+//
+//	XFACORPUS=/path/to/parts XFAPDFJS=/path/to/dumps go test -run FlowHeights -v
+//
+// # Why a height and not a place
+//
+// pdf.js emits no coordinates for a child of a flow layout: it writes the
+// children into a div with "display: flex; flex-direction: column"
+// (web/xfa_layer_builder.css:255-263) and lets the browser stack them. So for
+// exactly the layouts this slice computes, pdf.js's own output says where the
+// CONTAINER is and nothing about where its second child went.
+//
+// It does emit the accumulation itself, as a number, in one place. A subform's
+// own height is
+//
+//	Math.max(this[$extra].height + marginV, this.h || 0)      template.js:5222
+//
+// and that is written into style.height (template.js:5224-5229) and hoisted
+// onto the wrapper by createWrapper (html_utils.js:480-494). extra.height is
+// the sum this slice computes — extra.height += h, once per child
+// (layout.js:144-158). So comparing container heights compares the arithmetic,
+// one container at a time, against the implementation it was read from.
+//
+// # What it does not cover
+//
+//   - Where a container's children ended up inside it. Two orderings of the
+//     same children come to the same total, and this cannot tell them apart.
+//   - Any container whose height a template writes outright: pdf.js emits the
+//     written number and so does this package, and the two agreeing says
+//     nothing about the arithmetic. They are counted apart for that reason.
+//   - Any container pdf.js split across pages, or laid out once per page, or
+//     did not reach at all. Those come out with a different number of boxes on
+//     one side than the other, and are left unpaired rather than guessed at.
+//   - Every height that needs text measurement. pdf.js measures and this
+//     package does not, so there is no number of ours to compare.
+func TestFlowHeightsAgainstPdfjs(t *testing.T) {
+	dir, dumps := os.Getenv("XFACORPUS"), os.Getenv("XFAPDFJS")
+	if dir == "" || dumps == "" {
+		t.Skip("no XFACORPUS or no XFAPDFJS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+	var forms, computed, written, stretched, agree, rounding, differ, unpairable, unmeasured int
+	worst := map[string]int{}
+	for _, name := range names {
+		stem := strings.TrimSuffix(name, ".template.xml")
+		form := filepath.Base(stem)
+		raw, err := os.ReadFile(filepath.Join(dumps, form+".json"))
+		if err != nil || len(raw) < 2 {
+			continue
+		}
+		var dump struct {
+			Boxes []judgeBox `json:"boxes"`
+		}
+		if err := json.Unmarshal(raw, &dump); err != nil {
+			t.Errorf("%s: %v", form, err)
+			continue
+		}
+		forms++
+		theirs := map[string][]judgeBox{}
+		for _, b := range dump.Boxes {
+			if b.Kind != "container" {
+				continue
+			}
+			if n := leafName(b.Chain); n != "" {
+				theirs[n] = append(theirs[n], b)
+			}
+		}
+		mine := map[string][]containerHeight{}
+		collect(&placer{heights: map[*FormNode]height{}},
+			Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false)).Root,
+			containerHeight{}, mine)
+		for k, ms := range mine {
+			ts := theirs[k]
+			if len(ts) != len(ms) {
+				unpairable += len(ms)
+				continue
+			}
+			for i, m := range ms {
+				switch {
+				case !m.measured:
+					unmeasured++
+				case ts[i].H == nil:
+					unpairable++
+				case m.written:
+					written++
+				default:
+					computed++
+					if m.stretched {
+						stretched++
+					}
+					switch d := math.Abs(float64(m.h) - *ts[i].H); {
+					case d <= 0.011:
+						agree++
+					case d <= 0.05:
+						// pdf.js rounds every length to two decimals as it
+						// emits it (measureToString, html_utils.js:35-41).
+						rounding++
+					default:
+						differ++
+						worst[form]++
+					}
+				}
+			}
+		}
+	}
+	if computed == 0 {
+		t.Fatalf("%d forms, no computed height to compare", forms)
+	}
+	t.Logf("%d forms", forms)
+	t.Logf("%d container heights paired: %d this package computes, %d the template writes outright",
+		computed+written, computed, written)
+	t.Logf("  of the computed, %d are the height a row stretches its cells to", stretched)
+	t.Logf("%d unpairable, %d this package cannot measure", unpairable, unmeasured)
+	t.Logf("of the %d computed:", computed)
+	t.Logf("  agree to 1/100 pt   %6d  %5.2f%%", agree, 100*float64(agree)/float64(computed))
+	t.Logf("  pdf.js rounding     %6d  %5.2f%%", rounding, 100*float64(rounding)/float64(computed))
+	t.Logf("  DISAGREE            %6d  %5.2f%%", differ, 100*float64(differ)/float64(computed))
+	logWorst(t, worst)
+}
+
+// A containerHeight is what this package makes of one container's height.
+type containerHeight struct {
+	h Measure
+	// measured says a height came out at all: false where something inside it
+	// has no height until its text is measured.
+	measured bool
+	// written says the template gives the container a height of its own, so
+	// that pdf.js emitting the same number says nothing about the arithmetic.
+	written bool
+	// stretched says the height here is a row's rather than the container's
+	// own, because a row stretches its cells to it. See [collect].
+	stretched bool
+}
+
+// collect walks the expanded form and records, for every named container, the
+// height pdf.js should emit for it.
+//
+// That is the container's own height everywhere but in one place. A cell of a
+// row is stretched to the height of the tallest cell in the row, and pdf.js
+// applies the stretch by writing the row's height back over every cell it has
+// already placed (layout.js:135-143) — so the style.height it emits for a cell
+// is the ROW's height and not the cell's own. Comparing our cell height with
+// that reports thirteen disagreements over the corpus, every one of them the
+// stretch rather than the arithmetic. Comparing our ROW height with it checks
+// the stretch instead, which is what pdf.js is saying there.
+func collect(p *placer, n *FormNode, row containerHeight, out map[string][]containerHeight) {
+	switch n.Kind {
+	case "subform", "exclGroup", "area":
+		// pdf.js emits nothing at all for a hidden container
+		// (template.js:5019-5021), so it is not among the boxes to pair with
+		// and must not be among ours either.
+		if hidden(n.Template) {
+			return
+		}
+		if n.Name != "" {
+			c := row
+			if !c.stretched {
+				h, why := p.heightOf(n)
+				_, ok, errH := n.Template.Measure("h")
+				c = containerHeight{h: h, measured: why == "", written: ok && errH == nil}
+			}
+			out[n.Name] = append(out[n.Name], c)
+		}
+	}
+	var into containerHeight
+	if lay := layoutOf(n); lay == "row" || lay == "rl-row" {
+		h, why := p.contentHeight(n)
+		into = containerHeight{h: h, measured: why == "", stretched: true}
+	}
+	for _, k := range contained(n) {
+		collect(p, k, into, out)
+	}
+}
+
+// logWorst names the forms a comparison went worst in.
+func logWorst(t *testing.T, worst map[string]int) {
+	t.Helper()
+	type kv struct {
+		k string
+		n int
+	}
+	var list []kv
+	for k, n := range worst {
+		list = append(list, kv{k, n})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
+	for i, e := range list {
+		if i >= 8 {
+			break
+		}
+		t.Logf("  %6d in %s", e.n, e.k)
+	}
 }

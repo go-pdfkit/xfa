@@ -92,13 +92,22 @@ func TestAFormPlacedByHand(t *testing.T) {
 		//   Inner: 18+10, 36+20 = 28,56, and then
 		//   B:     28+3, 56+4                     = 31,60
 		"field form1.Body.Inner.B 31,60 50x10",
+		// Second is the tb layout's second child, so it begins where Body
+		// ends. Body writes no height of its own, so its height is how far its
+		// contents reach, and it is positioned, so that is the furthest of
+		// them from its own origin:
+		//   A     reaches y=2 + h=12                   = 14
+		//   Inner reaches y=20 + its own height
+		//     and Inner's height is B: y=4 + h=10      = 14, so 20+14 = 34
+		//   Body's height is the greater of the two    = 34
+		// so Second begins at 36+34 = 70, and C, which writes no x or y of its
+		// own, sits at the origin Second was put at.
+		"field form1.Second.C 18,70 10x10",
 	})
-	// Second is the tb layout's second child: where it begins is the height of
-	// Body, which is the flow layout this slice does not do.
-	same(t, "what was left off", notLaid(l), []string{
-		"form1.Second.C: a tb layout stacks its children, and where the one above it ends is not computed here",
-	})
-	if l.Fields() != 2 {
+	if notLaid(l) != nil {
+		t.Errorf("something was left off: %v", notLaid(l))
+	}
+	if l.Fields() != 3 {
 		t.Errorf("%d fields placed", l.Fields())
 	}
 }
@@ -212,11 +221,12 @@ func TestASubformSetHoldsNoPlaceOfItsOwn(t *testing.T) {
 	</subform></template>`)
 	// A is the first child the tb layout sees, through the flattened
 	// subformSet, so its own x and y go the way any first child's do and it
-	// sits at the content area's origin.
-	same(t, "the page", laid(l), []string{"field f.Set.A 10,20 5x5"})
-	same(t, "what was left off", notLaid(l), []string{
-		"f.Set.B: a tb layout stacks its children, and where the one above it ends is not computed here",
-	})
+	// sits at the content area's origin; B is the second, five points below it
+	// because A is five points tall.
+	same(t, "the page", laid(l), []string{"field f.Set.A 10,20 5x5", "field f.Set.B 10,25 5x5"})
+	if notLaid(l) != nil {
+		t.Errorf("something was left off: %v", notLaid(l))
+	}
 }
 
 func TestAnExclGroupPlacesItsButtons(t *testing.T) {
@@ -316,9 +326,11 @@ func TestAnchorTypeAndRotateAreResolvedIntoTheBox(t *testing.T) {
 	}
 }
 
-func TestEveryFlowLayoutIsNamedInItsReason(t *testing.T) {
+func TestEveryFlowLayoutIsAnsweredForOrRefusedByName(t *testing.T) {
 	// Each of the six has to be recognised, or its children would be placed at
-	// coordinates the layout throws away.
+	// coordinates the layout throws away. Two of them this slice follows; the
+	// other four say which one they are in the reason they give.
+	placed := map[string]int{"tb": 2, "table": 2, "lr-tb": 1, "row": 0, "rl-tb": 0, "rl-row": 0}
 	var names []string
 	for lay := range flowLayouts {
 		names = append(names, lay)
@@ -329,17 +341,16 @@ func TestEveryFlowLayoutIsNamedInItsReason(t *testing.T) {
 		  </pageArea></pageSet><subform name="S" layout="`+lay+`">
 		  <field name="A" w="1pt" h="1pt"/><field name="B" w="1pt" h="1pt"/>
 		  </subform></subform></template>`)
+		if len(l.Pages[0].Boxes) != placed[lay] {
+			t.Errorf("%s placed %d of the two, want %d", lay, len(l.Pages[0].Boxes), placed[lay])
+		}
+		if placed[lay] == 2 {
+			continue
+		}
+		// A row with no columnWidths above it is refused for want of them,
+		// which names the row; the rest name their own layout.
 		if len(notLaid(l)) == 0 || !strings.Contains(notLaid(l)[0], lay) {
 			t.Errorf("%s: %v", lay, notLaid(l))
-		}
-		// The ones that fill from the left place their first child; the ones
-		// that fill from the right place neither.
-		want := 0
-		if lay == "lr-tb" {
-			want = 1
-		}
-		if len(l.Pages[0].Boxes) != want {
-			t.Errorf("%s placed %d of the two", lay, len(l.Pages[0].Boxes))
 		}
 	}
 }

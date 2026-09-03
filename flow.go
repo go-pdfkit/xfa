@@ -43,9 +43,14 @@ type insets struct {
 	top, right, bottom, left Measure
 }
 
-// vertical and horizontal are what the insets add to a container's size.
-func (in insets) vertical() Measure   { return in.top + in.bottom }
-func (in insets) horizontal() Measure { return in.left + in.right }
+// vertical is what the top and bottom insets add to a container's height.
+//
+// There is no horizontal counterpart because nothing here computes a width:
+// the one width this slice needs is a table cell's, and that comes from the
+// table's columnWidths rather than from anything measured. rightInset is read
+// all the same, because a margin nobody can read has to stop the layout
+// whichever of the four is at fault.
+func (in insets) vertical() Measure { return in.top + in.bottom }
 
 // marginOf reads a container's <margin>. Each inset defaults to nought, as it
 // does in pdf.js (getMeasurement(attributes.topInset, "0"),
