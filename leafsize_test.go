@@ -58,45 +58,45 @@ func TestWhatAMeasurementRefuses(t *testing.T) {
 			`<draw name="A" w="wide"><value><text>hi</text></value></draw>`,
 			[]string{`f.A: its size is written as w="wide" h="", which is not a size`}},
 		{"a margin that is not in lengths",
-			`<draw name="A" w="50pt"><margin topInset="=0mm"/>
+			`<draw name="A" w="50pt"><margin topInset="96px"/>
 			 <value><text>hi</text></value></draw>`,
 			[]string{"f.A: " + marginNotLengths}},
 		{"a paragraph whose space above is not a length",
-			`<draw name="A" w="50pt"><para spaceAbove="=0mm"/>
+			`<draw name="A" w="50pt"><para spaceAbove="96px"/>
 			 <value><text>hi</text></value></draw>`,
-			[]string{`f.A: its paragraph is written as spaceAbove="=0mm", which is not a length`}},
+			[]string{`f.A: its paragraph is written as spaceAbove="96px", which is not a length`}},
 		{"a paragraph whose space below is not a length",
-			`<draw name="A" w="50pt"><para spaceBelow="=0mm"/>
+			`<draw name="A" w="50pt"><para spaceBelow="96px"/>
 			 <value><text>hi</text></value></draw>`,
-			[]string{`f.A: its paragraph is written as spaceBelow="=0mm", which is not a length`}},
+			[]string{`f.A: its paragraph is written as spaceBelow="96px", which is not a length`}},
 		{"a check box whose size is not a length",
-			`<field name="A" w="50pt"><ui><checkButton size="=0mm"/></ui></field>`,
-			[]string{`f.A: its check box is written as size="=0mm", which is not a length`}},
+			`<field name="A" w="50pt"><ui><checkButton size="96px"/></ui></field>`,
+			[]string{`f.A: its check box is written as size="96px", which is not a length`}},
 		{"a caption whose reserve is not a length",
-			`<field name="A" w="50pt"><caption reserve="=0mm"><value><text>hi</text></value></caption></field>`,
-			[]string{`f.A: its caption is written as reserve="=0mm", which is not a length`}},
+			`<field name="A" w="50pt"><caption reserve="96px"><value><text>hi</text></value></caption></field>`,
+			[]string{`f.A: its caption is written as reserve="96px", which is not a length`}},
 		{"a caption whose margin is not in lengths",
-			`<field name="A" w="50pt"><caption><margin topInset="=0mm"/>
+			`<field name="A" w="50pt"><caption><margin topInset="96px"/>
 			 <value><text>hi</text></value></caption></field>`,
 			[]string{"f.A: " + marginNotLengths}},
 		{"an edge of the widget's border that is not a length",
-			`<field name="A" w="50pt"><ui><textEdit><border><edge thickness="=0mm"/></border></textEdit></ui></field>`,
-			[]string{`f.A: an edge of its border is written as thickness="=0mm", which is not a length`}},
+			`<field name="A" w="50pt"><ui><textEdit><border><edge thickness="96px"/></border></textEdit></ui></field>`,
+			[]string{`f.A: an edge of its border is written as thickness="96px", which is not a length`}},
 		{"a margin on the widget's border that is not in lengths",
-			`<field name="A" w="50pt"><ui><textEdit><border><margin topInset="=0mm"/></border></textEdit></ui></field>`,
+			`<field name="A" w="50pt"><ui><textEdit><border><margin topInset="96px"/></border></textEdit></ui></field>`,
 			[]string{"f.A: " + marginNotLengths}},
 		{"a smallest height that is not a length",
-			`<field name="A" w="50pt" minH="=0mm"><value><text>hi</text></value></field>`,
-			[]string{`f.A: its smallest size is written as minH="=0mm", which is not a length`}},
+			`<field name="A" w="50pt" minH="96px"><value><text>hi</text></value></field>`,
+			[]string{`f.A: its smallest size is written as minH="96px", which is not a length`}},
 		{"a largest height that is not a length",
-			`<field name="A" w="50pt" maxH="=0mm"><value><text>hi</text></value></field>`,
-			[]string{`f.A: its largest size is written as maxH="=0mm", which is not a length`}},
+			`<field name="A" w="50pt" maxH="96px"><value><text>hi</text></value></field>`,
+			[]string{`f.A: its largest size is written as maxH="96px", which is not a length`}},
 		{"a smallest width that is not a length",
-			`<field name="A" h="50pt" minW="=0mm"><value><text>hi</text></value></field>`,
-			[]string{`f.A: its smallest size is written as minW="=0mm", which is not a length`}},
+			`<field name="A" h="50pt" minW="96px"><value><text>hi</text></value></field>`,
+			[]string{`f.A: its smallest size is written as minW="96px", which is not a length`}},
 		{"a largest width that is not a length",
-			`<field name="A" h="50pt" maxW="=0mm"><value><text>hi</text></value></field>`,
-			[]string{`f.A: its largest size is written as maxW="=0mm", which is not a length`}},
+			`<field name="A" h="50pt" maxW="96px"><value><text>hi</text></value></field>`,
+			[]string{`f.A: its largest size is written as maxW="96px", which is not a length`}},
 	} {
 		if got := notLaid(laidOut(t, page(`w="500pt" h="500pt"`, tc.body))); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
 			t.Errorf("%s:\n  got  %v\n  want %v", tc.what, got, tc.want)
@@ -111,12 +111,12 @@ func TestWhatARefusalSaysWhenTheHeightIsTheOneAtFault(t *testing.T) {
 		body string
 		want string
 	}{
-		{`<field name="A" w="50pt" maxH="=0mm"><value><text>hi</text></value></field>`,
-			`f.A: its largest size is written as maxH="=0mm", which is not a length`},
-		{`<draw name="A" maxH="=0mm"/>`,
-			`f.A: its largest size is written as maxH="=0mm", which is not a length`},
-		{`<draw name="A" minH="=0mm"/>`,
-			`f.A: its smallest size is written as minH="=0mm", which is not a length`},
+		{`<field name="A" w="50pt" maxH="96px"><value><text>hi</text></value></field>`,
+			`f.A: its largest size is written as maxH="96px", which is not a length`},
+		{`<draw name="A" maxH="96px"/>`,
+			`f.A: its largest size is written as maxH="96px", which is not a length`},
+		{`<draw name="A" minH="96px"/>`,
+			`f.A: its smallest size is written as minH="96px", which is not a length`},
 	} {
 		if got := notLaid(laidOut(t, page(`w="500pt" h="500pt"`, tc.body))); len(got) != 1 || got[0] != tc.want {
 			t.Errorf("%v, want [%s]", got, tc.want)
@@ -283,7 +283,7 @@ func TestAWidthNobodyCanReadLeavesNoWidthToBreakAt(t *testing.T) {
 	// A container whose own width is not a length gives what it holds no width
 	// at all, rather than a width of nought or the one it was given.
 	same(t, "what was left off", notLaid(laidOut(t, page(`w="500pt" h="500pt"`, `
-	  <subform name="S" w="=0mm" layout="tb">
+	  <subform name="S" w="96px" layout="tb">
 	    <draw name="A"><value><text>hi</text></value></draw></subform>`))),
 		[]string{"f.S.A: " + noWidthToBreakAt})
 }
@@ -317,15 +317,15 @@ func TestWhatAFieldsOwnMeasurementRefuses(t *testing.T) {
 		what, body, own, want string
 	}{
 		{"a field whose own margin is not in lengths",
-			`<field name="A" w="50pt"><margin topInset="=0mm"/><value><text>hi</text></value></field>`,
+			`<field name="A" w="50pt"><margin topInset="96px"/><value><text>hi</text></value></field>`,
 			"", marginNotLengths},
 		{"a field whose width is not a length",
 			`<field name="A" w="wide"><value><text>hi</text></value></field>`,
 			`its size is written as w="wide" h="", which is not a size`,
 			`its width is written as w="wide", which is not a length, and its text has to be broken at a width`},
 		{"a field whose paragraph is not in lengths",
-			`<field name="A" w="50pt"><para spaceAbove="=0mm"/><value><text>hi</text></value></field>`,
-			"", `its paragraph is written as spaceAbove="=0mm", which is not a length`},
+			`<field name="A" w="50pt"><para spaceAbove="96px"/><value><text>hi</text></value></field>`,
+			"", `its paragraph is written as spaceAbove="96px", which is not a length`},
 		{"a field holding rich text written as escaped markup",
 			`<field name="A" w="50pt"><value><exData contentType="text/html">&lt;body&gt;hi&lt;/body&gt;</exData></value></field>`,
 			"", notMeasurable},
@@ -333,8 +333,8 @@ func TestWhatAFieldsOwnMeasurementRefuses(t *testing.T) {
 			`<field name="A" w="50pt"><caption><value><exData contentType="text/html">&lt;body&gt;hi&lt;/body&gt;</exData></value></caption></field>`,
 			"", notMeasurable},
 		{"a caption whose paragraph is not in lengths",
-			`<field name="A" w="50pt"><caption><para spaceBelow="=0mm"/><value><text>hi</text></value></caption></field>`,
-			"", `its paragraph is written as spaceBelow="=0mm", which is not a length`},
+			`<field name="A" w="50pt"><caption><para spaceBelow="96px"/><value><text>hi</text></value></caption></field>`,
+			"", `its paragraph is written as spaceBelow="96px", which is not a length`},
 	} {
 		got := notLaid(laidOut(t, page(`w="500pt" h="500pt"`, tc.body+`<draw name="Z" w="1pt" h="1pt"/>`)))
 		own := tc.own

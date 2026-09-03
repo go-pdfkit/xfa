@@ -325,7 +325,7 @@ func TestASheetSmallerThanTheOneBeforeItCanStillBeTooSmall(t *testing.T) {
 
 func TestAMarginNobodyCanReadStopsTheContainerRatherThanTheForm(t *testing.T) {
 	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
-	  <subform name="Bad" layout="tb"><margin topInset="=1"/>
+	  <subform name="Bad" layout="tb"><margin topInset="96px"/>
 	    <draw name="A" w="1pt" h="5pt"/></subform>
 	  <draw name="B" w="1pt" h="5pt"/>`))
 	same(t, "the sheets", byPage(l), []string{"0: draw f.B 0,0 1x5"})
@@ -334,11 +334,11 @@ func TestAMarginNobodyCanReadStopsTheContainerRatherThanTheForm(t *testing.T) {
 }
 
 func TestAnOriginNobodyCanReadStopsTheWholeBody(t *testing.T) {
-	l := laidOut(t, `<template><subform name="f" layout="tb" x="=1">
+	l := laidOut(t, `<template><subform name="f" layout="tb" x="96px">
 	  <pageSet>`+sheet("P", "", "100", "")+`</pageSet>
 	  <draw name="A" w="1pt" h="5pt"/></subform></template>`)
 	same(t, "what was left off", notLaid(l),
-		[]string{`f.A: its origin is written as x="=1" y="", which is not a place`})
+		[]string{`f.A: its origin is written as x="96px" y="", which is not a place`})
 }
 
 func TestOneHeightNobodyCanArriveAtStopsEveryStackAboveIt(t *testing.T) {

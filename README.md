@@ -177,12 +177,11 @@ Measured over the same 560 packages:
 | | |
 |---|---:|
 | fields in the body of the expanded forms | 81 750 |
-| **placed** | **54 708** |
-| draws placed with them | 106 181 |
-| sheets they came to | 2 268 |
-| below a height written as `=0mm`, which is not a length | 16 936 |
+| **placed** | **71 230** |
+| draws placed with them | 130 846 |
+| sheets they came to | 2 737 |
+| a place computed and nowhere left to put it | 6 208 |
 | under a layout this does not follow (`lr-tb`) | 4 303 |
-| a place computed and nowhere left to put it | 5 794 |
 | anchored by a corner, with no size of its own | 9 |
 
 ## Measuring text
@@ -279,10 +278,100 @@ is a pass of its own — and no corpus leaf that needs it writes one.
 The three blockers that *grew* grew because they were behind the wall: a field
 below an unmeasurable leaf was reported for the leaf, and is now reported for
 whatever is genuinely in its way. **`h="=0mm"` is now the largest single
-thing between here and a whole corpus** — and pdf.js reads it as nought,
-because `getMeasurement`'s pattern is unanchored and finds the `0mm` inside it
-(`utils.js:83-87`). Whether that is Adobe's rule or an accident of a regular
-expression is a reading for the next slice, not a guess for this one.
+thing between here and a whole corpus** — and the section below settles what
+it means.
+
+## A measure written as a calculation
+
+XFA lets a length be written as a calculation, with a leading `=`. The corpus
+writes exactly one — **`h="=0mm"`, 955 times over 101 of its 560 forms**, on
+draws named `Line` — and that one shape held up **16 936 fields**, because a
+stack cannot say where its next child begins while a height above it is
+unreadable.
+
+**The tempting move is to copy pdf.js, and it would be right by accident.** It
+places all of them: `getMeasurement`'s pattern `/([+-]?\d+\.?\d*)(.*)/` is
+unanchored, so it matches the `0mm` **inside** the string having never noticed
+the `=` at all (`utils.js:83-87`). That is a property of a regular expression,
+not a statement about XFA — the same shape as the `px` this package refused in
+its first slice.
+
+The authority is pdfium's `CXFA_Measurement`, Foxit's implementation and the
+closest to Adobe's own. `SetString` strips a leading `=` **deliberately**, and
+then parses what is left leniently (`cxfa_measurement.cpp`):
+
+- blanks before the number are skipped, and only spaces are — `FXSYS_wcstof`
+  skips `' '` and nothing else (`fx_extension.cpp:41-45`), so a tab stops the
+  number before it starts;
+- the value is the longest floating-point number **beginning** what is left;
+- a value that is not finite is nought, which is what `isfinite` is there for;
+- the unit is the whole of the rest, matched exactly and with its case.
+
+So `="0mm"` really is nought. The two implementations agree on the answer and
+only one of them agrees for a reason, which is why the tests here are a port of
+`cxfa_measurement_unittest.cpp` rather than an agreement count with pdf.js.
+
+**An expression is not evaluated, and that is the rule rather than a gap.**
+`="Foo.h * 2"` has nothing numeric beginning it, so under pdfium's rule it is
+nought in a unit pdfium does not know — and a length in a unit it does not know
+is nought points, because `ToUnitInternal` has no arm for one and `ToUnit`
+turns "cannot convert" into nought. Nought is the reference's **answer** for an
+expression, not a shortfall standing in for one. A script engine behind this
+would disagree with pdfium on every form that writes one.
+
+Two answers therefore differ from the ones a plain measure gets, and neither is
+written in the corpus: a calculated number with **no** unit is nought (`="5"`
+is not five points, where `"5"` is), and the unit is matched with its case
+(`="5MM"` is nought, where `"5MM"` is nine tenths of an inch).
+
+### What it is worth: 16 522 more fields, and 16 936 was not the prediction
+
+| | slice 4 | slice 5 |
+|---|---:|---:|
+| **placed** | **54 708** | **71 230** |
+| below a height written as `=0mm` | 16 936 | **0** |
+| a place computed and nowhere left to put it | 5 794 | 6 208 |
+| under `lr-tb` | 4 303 | 4 303 |
+| anchored by a corner, with no size of its own | 9 | 9 |
+
+Counted field by field against slice 4's own dispositions, the 16 936 whose
+first blocker was `=0mm` reconcile exactly:
+
+| what became of a field blocked by `=0mm` | |
+|---|---:|
+| **placed** | **16 687** |
+| taller than a whole content area, and cannot be broken | 249 |
+
+**189 fields that slice 4 placed are now reported unplaced**, and this is the
+honest direction. Each sits in a container whose height slice 4 could not
+compute: the stack placed the child it had reached and stopped, so part of the
+container went on the sheet. Now the container measures, and it measures
+**taller than a whole content area** — so it cannot be placed at all without
+splitting it across a sheet, which this slice does not do. Losing them is what
+it looks like when a masked blocker comes out from behind a wall. 128 of them
+are one form, `us-opm__sf144a`.
+
+The arithmetic: 16 687 placed + 24 more freed elsewhere − 189 reported =
+**16 522**, and 54 708 + 16 522 = 71 230.
+
+### The judge had a fault of its own, and it was the same shape as the last one
+
+Four draws of `us-ssa__ss-5-ar-inst` are written **`w="-0.106in"`** — a
+negative width — and became reachable for the first time in this slice. The
+check called all four defects: boxes placed *left of the container holding
+them*.
+
+They are not. A negative extent is not a box reaching left of where it was put:
+pdfium normalises a widget's rectangle before using it — `CFX_RectF::Normalize`
+moves the origin by the extent and takes its magnitude
+(`cxfa_fffield.cpp:293`, `cxfa_ffwidget.cpp:288`) — and so does this package.
+pdf.js does not, because CSS cannot: it emits `width:-0.11px`, which a browser
+ignores. The judge was comparing **our normalised left edge against pdf.js's
+unnormalised origin**, which is the same box counted two ways. Normalising both
+sides puts the count back to **0**.
+
+It is slice 4's fault in a new place: a comparison at fault announcing itself
+as a disagreement about the subject.
 
 ### Checked against pdf.js, which CAN see all of this
 
@@ -300,29 +389,29 @@ into the "pdf.js placed it by flexbox" one, where they belong.
 
 | container heights | | |
 |---|---:|---:|
-| heights **this package computes**, paired with pdf.js's | 7 758 | |
-| **agree to within 1/100 pt** | **7 758** | **100.00%** |
+| heights **this package computes**, paired with pdf.js's | 7 764 | |
+| **agree to within 1/100 pt** | **7 764** | **100.00%** |
 | disagree | 0 | 0.00% |
-| more paired but written outright in the template — no check in agreeing | 5 136 | |
+| more paired but written outright in the template — no check in agreeing | 5 289 | |
 
 | where the boxes went | | |
 |---|---:|---:|
 | boxes where pdf.js emits a real place | 176 | |
 | **agree exactly** | **176** | **100.00%** |
-| boxes pdf.js placed by flexbox | 117 813 | |
-| ... at the flow container's own origin, where a first child goes | 115 498 | |
-| ... below or to the right of it, where the rest go | 2 315 | |
+| boxes pdf.js placed by flexbox | 152 446 | |
+| ... at the flow container's own origin, where a first child goes | 149 488 | |
+| ... below or to the right of it, where the rest go | 2 958 | |
 | ... **above or to the left of it, which would be outside it** | **0** | **0.00%** |
 
 | which sheet they went on | | |
 |---|---:|---:|
-| forms where this package placed **every** element of the body | 357 | |
-| of those, agreeing with pdf.js on the number of sheets | **354** | 99.2% |
-| boxes paired on those forms | 89 334 | |
-| **on the same sheet as pdf.js put them** | **89 334** | **100.00%** |
+| forms where this package placed **every** element of the body | 431 | |
+| of those, agreeing with pdf.js on the number of sheets | **428** | 99.3% |
+| boxes paired on those forms | 117 378 | |
+| **on the same sheet as pdf.js put them** | **117 378** | **100.00%** |
 | on another sheet | 0 | 0.00% |
-| forms where fewer elements were placed, and so fewer sheets used | 86 | |
-| ... the same number of sheets | 40 | |
+| forms where fewer elements were placed, and so fewer sheets used | 35 | |
+| ... the same number of sheets | 17 | |
 | ... **MORE** sheets, which would be a defect | **0** | 0.00% |
 
 The three sheet-count disagreements are not pagination and not text. Two
@@ -350,6 +439,10 @@ it as one point and this package used to read it as 72/96 of one; both were
 HTML habits carried into a format that does not have the unit. A length in `px`
 is now refused rather than guessed at, and the element carrying it is reported
 unplaced. No `x`, `y`, `w` or `h` in the corpus is written in it.
+
+A length may also be written as a **calculation**, with a leading `=`. That is
+read by pdfium's rule, which strips the `=` and parses the rest leniently and
+without ever failing — see the section above.
 
 `Node.Measure` answers three ways, not two: the attribute is absent, or it is a
 length, or it is there and unreadable. XFA's "unspecified" and its "zero" are
