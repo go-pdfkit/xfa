@@ -247,19 +247,29 @@ func (p *placer) rejectUnusedPages(root *FormNode) {
 // dropEmptyPages throws away a sheet the body put nothing on.
 //
 // pdf.js does the same (template.js:5502-5510, 5588-5590): a break can send
-// the layout onto a fresh sheet before anything has been put on the one in
-// hand, and the empty one is popped rather than shipped. The last sheet is
-// kept whatever, because a form with nothing on it is still a form of one
-// page.
+// the layout onto a fresh sheet after everything has been put on the one in
+// hand, and the empty one is popped rather than shipped. A sheet carrying only
+// the page area's own furniture is empty in this sense — nothing of the FORM
+// is on it. The last sheet is kept whatever, because a form with nothing on it
+// is still a form of one page.
 func (p *placer) dropEmptyPages() {
 	var keep []Page
 	for i, page := range p.layout.Pages {
-		if len(page.Boxes) > p.furniture[i] || len(keep) == 0 && i == len(p.layout.Pages)-1 {
+		if p.touched[i] > 0 || len(keep) == 0 && i == len(p.layout.Pages)-1 {
 			keep = append(keep, page)
 		}
 	}
 	p.layout.Pages = keep
 }
+
+// touch records that something of the body was laid out on the sheet in hand.
+//
+// pdf.js asks the same question of the html the body returned for a content
+// area — hasSomething ||= html.children?.length > 0 (template.js:5545, 5568) —
+// so a CONTAINER holding nothing that is drawn still counts. That is not a
+// detail: thirty-eight forms of the corpus carry a break onto a last sheet
+// whose only content is an empty subform, and pdf.js ships the sheet.
+func (p *placer) touch() { p.touched[len(p.touched)-1]++ }
 
 // contentAvail is the vertical room a content area gives the body. A content
 // area that writes no height, or one nobody can read, bounds nothing: pdf.js
@@ -299,9 +309,10 @@ type placer struct {
 	slot     int
 	area     Rect
 	avail    Measure
-	// furniture is how many boxes of each page are the page area's own, so
-	// that a sheet the body put nothing on can be told from a full one.
-	furniture []int
+	// touched counts, for each sheet, how much of the BODY was laid out on
+	// it. A sheet nothing of the body reached is not shipped; see
+	// [placer.dropEmptyPages].
+	touched []int
 	// chain is the run of splittable containers open between the content area
 	// and the element being placed, outermost first, and y is how far down the
 	// current content area the flow has got.

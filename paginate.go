@@ -168,6 +168,7 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 		// Where THIS one begins is known exactly, so it is placed. Where the
 		// one after it begins is this one's height, so it is not, and neither
 		// is anything after that, at this level or at any above it.
+		p.touch()
 		p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, cols: lv.cols}, nil)
 		p.blocked = fmt.Sprintf(
 			"a %s layout stacks its children, and the height of the one above it is not computed: %s", lay, why)
@@ -193,6 +194,7 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 			return true
 		}
 	}
+	p.touch()
 	p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, cols: lv.cols}, nil)
 	p.y += h
 	return true
@@ -252,6 +254,7 @@ func (p *placer) push(n *FormNode, xoff, yoff Measure) bool {
 		p.rejectAll(n, "the container that stacks it writes a margin that is not in lengths")
 		return false
 	}
+	p.touch()
 	lv := &level{in: in, xoff: xoff, yoff: yoff}
 	if h, okH, errH := n.Template.Measure("h"); okH && errH == nil {
 		lv.own, lv.limit = h, h
@@ -404,7 +407,7 @@ func (p *placer) startPage(area *FormNode) {
 		page.Areas = append(page.Areas, contentRect(c))
 	}
 	p.layout.Pages = append(p.layout.Pages, page)
+	p.touched = append(p.touched, 0)
 	p.used[area] = true
 	p.placeAt(area, frame{avail: given(page.Height)}, nil)
-	p.furniture = append(p.furniture, len(p.cur().Boxes))
 }

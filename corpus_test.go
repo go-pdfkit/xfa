@@ -7,6 +7,7 @@ package xfa
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -428,7 +429,11 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 // chain of positioned ancestors and resolving the CSS transforms pdf.js writes
 // for anchorType and rotate.
 type judgeBox struct {
-	Kind   string   `json:"kind"`
+	Kind string `json:"kind"`
+	// Page is which of pdf.js's own page divs the box came out in. It is the
+	// one thing pdf.js says outright about pagination, and the only reason
+	// this slice has an external control at all.
+	Page   int      `json:"page"`
 	Chain  string   `json:"chain"`
 	X      *float64 `json:"x"`
 	Y      *float64 `json:"y"`
@@ -845,5 +850,142 @@ func bodyOf(n *FormNode, into map[*FormNode]bool) {
 	into[n] = true
 	for _, k := range n.Kids {
 		bodyOf(k, into)
+	}
+}
+
+// TestPaginationAgainstPdfjs checks how many sheets this package comes to, and
+// which sheet each element lands on, against pdf.js's answer for the same
+// form.
+//
+//	XFACORPUS=/path/to/parts XFAPDFJS=/path/to/dumps go test -run AgainstPdfjs -v
+//
+// # Why this is a judge where the last slice had none for its own work
+//
+// pdf.js emits one <div class="xfaPage"> per sheet and every element inside
+// the one it belongs to. That is a thing it says outright, in the structure of
+// its output rather than in a style — so page COUNT and per-page MEMBERSHIP
+// are comparable even where a coordinate is not, which is exactly what the
+// last slice could not check about its stacking and had to reach for container
+// heights instead.
+//
+// # What it does not cover, and why the strict comparison is narrowed
+//
+// pdf.js measures text and this package does not, so on a form where a leaf
+// writes no height pdf.js lays out elements this package leaves unplaced —
+// and more elements need more sheets. Comparing page counts there would
+// measure the missing font stack, not the pagination. So the count is compared
+// strictly only on the forms where this package placed EVERY element of the
+// body, where the two are laying out the same thing; the rest are reported
+// apart, and the direction of the disagreement is reported with them, because
+// a form where this package needs MORE sheets than pdf.js while placing FEWER
+// elements would be a defect and not a shortfall.
+//
+// Membership is not checked where the count disagrees: two different
+// paginations of the same form have no page to compare. It says nothing about
+// WHERE on a page an element sits — [TestPlacementAgainstPdfjs] is that check
+// — nor about the 77 forms pdf.js cannot lay out at all.
+func TestPaginationAgainstPdfjs(t *testing.T) {
+	dir, dumps := os.Getenv("XFACORPUS"), os.Getenv("XFAPDFJS")
+	if dir == "" || dumps == "" {
+		t.Skip("no XFACORPUS or no XFAPDFJS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+	var whole, wholeAgree, partial, partialFewer, partialSame, partialMore int
+	var paired, samePage, otherPage int
+	var theirPages, ourPages int
+	disagreed := map[string]string{}
+	for _, name := range names {
+		stem := strings.TrimSuffix(name, ".template.xml")
+		form := filepath.Base(stem)
+		raw, err := os.ReadFile(filepath.Join(dumps, form+".json"))
+		if err != nil || len(raw) < 2 {
+			continue
+		}
+		var dump struct {
+			Pages int        `json:"pages"`
+			Boxes []judgeBox `json:"boxes"`
+		}
+		if err := json.Unmarshal(raw, &dump); err != nil {
+			t.Errorf("%s: %v", form, err)
+			continue
+		}
+		l := Place(Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false)))
+		theirPages += dump.Pages
+		ourPages += len(l.Pages)
+		if len(l.Unplaced) != 0 {
+			partial++
+			switch {
+			case len(l.Pages) < dump.Pages:
+				partialFewer++
+			case len(l.Pages) == dump.Pages:
+				partialSame++
+			default:
+				partialMore++
+			}
+			continue
+		}
+		whole++
+		if len(l.Pages) != dump.Pages {
+			disagreed[form] = fmt.Sprintf("%d sheets against pdf.js's %d", len(l.Pages), dump.Pages)
+			continue
+		}
+		wholeAgree++
+		// The count agrees, so the sheets can be lined up and membership asked
+		// of them. Boxes are paired as [TestPlacementAgainstPdfjs] pairs them:
+		// by kind and by the element's own name, and only where both sides
+		// produced the same number of them.
+		theirs := map[string][]int{}
+		for _, b := range dump.Boxes {
+			if b.Kind == "container" {
+				continue
+			}
+			if n := leafName(b.Chain); n != "" {
+				theirs[b.Kind+" "+n] = append(theirs[b.Kind+" "+n], b.Page)
+			}
+		}
+		mine := map[string][]int{}
+		for i, p := range l.Pages {
+			for _, b := range p.Boxes {
+				if b.Node.Name != "" {
+					mine[b.Kind+" "+b.Node.Name] = append(mine[b.Kind+" "+b.Node.Name], i)
+				}
+			}
+		}
+		for k, ms := range mine {
+			ts, ok := theirs[k]
+			if !ok || len(ts) != len(ms) {
+				continue
+			}
+			for i, m := range ms {
+				paired++
+				if m == ts[i] {
+					samePage++
+				} else {
+					otherPage++
+					if _, seen := disagreed[form]; !seen {
+						disagreed[form] = fmt.Sprintf("%s is on sheet %d, pdf.js puts it on %d", k, m, ts[i])
+					}
+				}
+			}
+		}
+	}
+	t.Logf("pdf.js laid out %d forms on %d sheets; this package puts the same forms on %d",
+		whole+partial, theirPages, ourPages)
+	t.Logf("forms where this package placed EVERY element: %d, of which %d agree on the number of sheets",
+		whole, wholeAgree)
+	t.Logf("forms where it did not: %d — %d on fewer sheets, %d on the same, %d on MORE",
+		partial, partialFewer, partialSame, partialMore)
+	t.Logf("boxes paired on those %d forms: %d, on the same sheet %d, on another %d",
+		wholeAgree, paired, samePage, otherPage)
+	shown := 0
+	for form, what := range disagreed {
+		if shown++; shown > 20 {
+			break
+		}
+		t.Logf("  %-40s %s", form, what)
 	}
 }
