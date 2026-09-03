@@ -109,6 +109,10 @@ and this follows two of the six:
 `rl-tb` and `rl-row` fill from the right, which needs a width. Only the first
 child of an `lr-tb` is placed.
 
+A **leaf's own height** is often not written either, and then it is its text:
+broken into lines at the width it has, a line count times a line height. See
+[Measuring text](#measuring-text).
+
 **Nothing is dropped.** Every field and every draw of the form's body comes
 back in exactly one of `Page.Boxes` and `Layout.Unplaced`, and each unplaced
 one carries the reason in words. A layout that reaches part of a form is
@@ -173,87 +177,169 @@ Measured over the same 560 packages:
 | | |
 |---|---:|
 | fields in the body of the expanded forms | 81 750 |
-| **placed** | **29 123** |
-| draws placed with them | 49 329 |
-| sheets they came to | 1 237 |
-| waiting on a height only measuring text would give | 44 246 |
-| a height written as `=0mm`, which is not a length | 3 649 |
-| under a layout this does not follow (`lr-tb`) | 3 124 |
-| a place computed and nowhere left to put it | 1 608 |
+| **placed** | **54 708** |
+| draws placed with them | 106 181 |
+| sheets they came to | 2 268 |
+| below a height written as `=0mm`, which is not a length | 16 936 |
+| under a layout this does not follow (`lr-tb`) | 4 303 |
+| a place computed and nowhere left to put it | 5 794 |
+| anchored by a corner, with no size of its own | 9 |
 
-### The prediction was 36 494, and the gap is the finding
+## Measuring text
 
-Slice 2 placed 15 400 fields and reported that 21 094 more had a place computed
-that fell past the bottom of the one content area it laid out — so "the
-arithmetic reaches 36 494" once the page turns. It reaches **29 123**.
+Half the corpus was held up by one thing, and it was not a font.
 
-Of those 21 094 (20 736 counted by path), pagination placed **14 077 — 68% of
-them.** The other third were never behind pagination at all:
+Only **8 466 draws and 598 fields** of the corpus's ~234 000 leaves write no
+height — under four per cent. But a stack is a chain: where a `tb` container's
+second child begins **is** the height of the first, so one leaf nobody can
+measure leaves every sibling below it, and every sibling of every container
+above it, with nowhere to begin. Those few thousand leaves held up **44 246
+fields, more than half the corpus.**
 
-| what became of a field that fell past the bottom | |
-|---|---:|
-| **placed, once the sheet turned** | **14 077** |
-| held up by a leaf above it with no written height, further down the same stack | 5 156 |
-| taller than a whole content area, and cannot be broken | 885 |
-| the form ran out of pages | 405 |
-| no room inside a container that moves whole | 167 |
-| other | 46 |
+### The regime this measures in is the reference's own
 
-**The page-1 cutoff was masking text measurement.** A field reported as "past
-the bottom" was one whose place had been computed *on the assumption that
-everything above it on that page had a height*; once the page turns and the
-stack goes on, a quarter of them turn out to sit below a leaf that writes none.
-Which is the same shape of error as the two before it: a question asked about
-one node — does this one's place fall past the bottom? — where the structure is
-a chain.
+pdf.js measures with the fonts of the PDF the XFA package came in, and has a
+written-down fallback for when it has none:
 
-### Checked against pdf.js, which CAN see this
+- `TextMeasure.addString` with no font — *"When we have no font in the pdf,
+  just use the font size as default width"* (`text.js:211-219`): **one em per
+  character**, a line **1.2 ems** tall, and a first line **one em** tall.
+- `getMetrics` with no font (`fonts.js:173-179`): the constants
+  `{ lineHeight: 12, lineGap: 2, lineNoGap: 10 }`.
 
-pdf.js emits one `<div class="xfaPage">` per sheet, with every element inside
-the one it belongs to. That is said outright, in the structure of the output
-rather than in a style, so page **count** and per-page **membership** are
-comparable even where a coordinate is not.
+This package implements that regime and nothing else, which is why `go.mod`
+still has no dependencies. It is not a stand-in for something better: it is
+what the reference runs on a form whose fonts it cannot resolve, so the two
+sets of numbers are directly comparable rather than merely plausible.
 
-It has to be narrowed, because pdf.js measures text and this package does not:
-on a form where a leaf writes no height pdf.js lays out elements this leaves
-unplaced, and more elements need more sheets. So the count is compared strictly
-only on the forms where every element of the body was placed.
+**The size is not the template's, and that is pdf.js's doing.** `FontInfo` asks
+the font finder for the typeface (`text.js:42`) and, when it does not have it,
+replaces the *whole* of `xfaFont` with the default's (`:43-46, 55-83`) —
+typeface Courier, size 10, letter spacing 0. A `<font size="14pt">` beside a
+typeface nobody has is discarded along with it. So is a `<span
+style="font-size:14pt">`, and so is `line-height`. Honouring the written size
+would disagree with the reference on nearly every leaf.
 
-| | | |
+When real advances are wanted, they belong in `go-opentype/opentype`, which
+already exposes glyph advances and units per em. Filling `glyph.w` from a face
+is the whole change; the line breaking and the arithmetic above it do not move.
+
+### Rich text is walked in the order the markup writes it
+
+2 255 of the unsized draws hold `<exData contentType="text/html">` rather than
+a string, and **32 109 of the corpus's `<p>` elements hold text both before and
+after a `<span>`**. So character data inside a rich text is kept as ordered
+`#text` children rather than joined and trimmed, which is what pdf.js's
+`XmlObject` does with it (`xfa_object.js:865-887`).
+
+The normalisation is pdf.js's, applied run by run rather than once over the
+joined text, because that is where pdf.js applies it: a newline is **removed**,
+runs of whitespace collapse to one space unless the element writes
+`xfa-spacerun:yes` — **44 099 spans of the corpus do** — and `<body>` and
+`<html>` drop whitespace-only text altogether.
+
+*The defect not to copy*: `<b>` and `<i>` call `measure.pushFont`
+(`xhtml.js:377, 467`), and `TextMeasure` has no such method. A rich text
+carrying either throws inside pdf.js's own measurement. No unsized leaf of the
+corpus writes one.
+
+### Two things decided it, and neither is about fonts
+
+**The last no-break space of a run becomes an ordinary one.** pdf.js does this
+to every text node of the document (`parser.js:61-63`), with the comment
+*"normally by definition a &nbsp is unbreakable but in real life Acrobat can
+break strings on &nbsp"*. It decides line breaking outright: `Line 2 of
+Form\u00a0AB(S11)` in a 63-point column is four lines with the space and three
+without it. Until it was applied outside rich text, **31 container heights
+disagreed with pdf.js**, all of them in tables of `ca-cra` and `us-irs` forms.
+
+**A leaf whose text gives no height is not left unmeasured.** `computeBbox`
+(`html_utils.js:290-324`) is called on every draw and every field before it
+returns, and where the height is still unwritten it fills it in from `minH` —
+or from nought under a positioned parent that writes a height of its own. The
+container above stacks *that*. 7 475 of the unsized draws write a `minH`.
+
+The one case this refuses is `maxH` above nought, where pdf.js answers with the
+**room** the leaf has rather than with anything the template wrote. A height is
+arrived at before the room it will go in is known — that is why the measurement
+is a pass of its own — and no corpus leaf that needs it writes one.
+
+### What the measurement is worth
+
+**25 585 more fields**, 29 123 to 54 708.
+
+| what blocks a field, before and after | slice 3 | slice 4 |
 |---|---:|---:|
-| forms where this package placed **every** element of the body | 199 | |
-| of those, agreeing with pdf.js on the number of sheets | **198** | 99.5% |
-| boxes paired on those forms | 23 006 | |
-| **on the same sheet as pdf.js put them** | **23 006** | 100.00% |
-| on another sheet | **0** | 0.00% |
-| forms where fewer elements were placed, and so fewer sheets used | 221 | |
-| ... the same number of sheets | 63 | |
+| **placed** | **29 123** | **54 708** |
+| waiting on a height only measuring text would give | 44 246 | 0 |
+| below a height written as `=0mm` | 3 649 | 16 936 |
+| under `lr-tb` | 3 124 | 4 303 |
+| a place computed and nowhere left to put it | 1 608 | 5 794 |
+
+The three blockers that *grew* grew because they were behind the wall: a field
+below an unmeasurable leaf was reported for the leaf, and is now reported for
+whatever is genuinely in its way. **`h="=0mm"` is now the largest single
+thing between here and a whole corpus** — and pdf.js reads it as nought,
+because `getMeasurement`'s pattern is unanchored and finds the `0mm` inside it
+(`utils.js:83-87`). Whether that is Adobe's rule or an accident of a regular
+expression is a reading for the next slice, not a guess for this one.
+
+### Checked against pdf.js, which CAN see all of this
+
+The judge from slices 2 and 3 is extended rather than replaced, and one thing
+it did before was wrong.
+
+**Boxes are now paired by their whole chain of names, not by their own.** Six
+subforms of `us-irs__fw9` are called `Bullet1`, in three lists on three sheets;
+while most of them had no height they were never compared, and once they all
+had one they became six entries of one list with nothing to make the two lists
+line up. Pairing on the chain turns a mispairing into an **unpaired** box
+rather than into a disagreement — and it moved 8 090 unpairable boxes down to
+5 133 while moving 2 139 boxes out of the "pdf.js emits a place" column and
+into the "pdf.js placed it by flexbox" one, where they belong.
+
+| container heights | | |
+|---|---:|---:|
+| heights **this package computes**, paired with pdf.js's | 7 758 | |
+| **agree to within 1/100 pt** | **7 758** | **100.00%** |
+| disagree | 0 | 0.00% |
+| more paired but written outright in the template — no check in agreeing | 5 136 | |
+
+| where the boxes went | | |
+|---|---:|---:|
+| boxes where pdf.js emits a real place | 176 | |
+| **agree exactly** | **176** | **100.00%** |
+| boxes pdf.js placed by flexbox | 117 813 | |
+| ... at the flow container's own origin, where a first child goes | 115 498 | |
+| ... below or to the right of it, where the rest go | 2 315 | |
+| ... **above or to the left of it, which would be outside it** | **0** | **0.00%** |
+
+| which sheet they went on | | |
+|---|---:|---:|
+| forms where this package placed **every** element of the body | 357 | |
+| of those, agreeing with pdf.js on the number of sheets | **354** | 99.2% |
+| boxes paired on those forms | 89 334 | |
+| **on the same sheet as pdf.js put them** | **89 334** | **100.00%** |
+| on another sheet | 0 | 0.00% |
+| forms where fewer elements were placed, and so fewer sheets used | 86 | |
+| ... the same number of sheets | 40 | |
 | ... **MORE** sheets, which would be a defect | **0** | 0.00% |
 
-The one disagreement, `us-opm__sf813`, is not pagination: its outermost subform
-is **positioned**, and pdf.js's `checkDimensions` position arm
-(`layout.js:355-364`) sends children that reach past the bottom of the content
-area onto a second sheet. This package does not fit-check a positioned layout
-at all — it did not in slice 1 either — so it draws them where their
-coordinates say, off the bottom of the one sheet.
-
-The heights and the placements are still checked, and both still agree exactly:
-
-| | | |
-|---|---:|---:|
-| container heights this package computes, paired with pdf.js's | 7 072 | |
-| agree to within 1/100 pt | **7 072** | 100.00% |
-| boxes where pdf.js emits a real place | 450 | |
-| agree exactly | **450** | 100.00% |
-| boxes pdf.js placed by flexbox, none above or left of its container | 51 312 | |
+The three sheet-count disagreements are not pagination and not text. Two
+(`us-opm__sf813`, `us-opm__sf39a`) have a **positioned** outermost subform, and
+pdf.js's `checkDimensions` position arm (`layout.js:355-364`) sends children
+reaching past the bottom of the content area onto a second sheet; this package
+does not fit-check a positioned layout at all.
 
 **What none of this covers**: where inside a container the children ended up
-(two orderings come to the same total); borders, margins and insets on
-positioned layouts, which pdf.js writes as CSS `calc()`; text measurement;
-anything under a rotated ancestor; and breaking one container in two across a
-sheet. It also could not run on 77 of the 560 forms — 70 because pdf.js's
-`selectFont` dereferences a null typeface when no font is supplied
-(`fonts.js:159`), and 7 for the recursion above.
+(two orderings come to the same total, and no height tells them apart);
+borders, margins and insets on positioned layouts; anything under a rotated
+ancestor; breaking one container in two across a sheet; and real per-glyph
+advances, which nothing here has and which the comparison is therefore blind
+to in both directions. It also could not run on 77 of the 560 forms — 70
+because pdf.js's `selectFont` dereferences a null typeface when no font is
+supplied (`fonts.js:159`), which is precisely the line `getMetrics` documents
+as its no-font answer, and 7 for the recursion above.
 
 ## Lengths
 
