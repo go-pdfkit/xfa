@@ -298,8 +298,8 @@ func countTemplateFields(n *Node, parentLayout string, c *[4]int) {
 }
 
 // TestPlacementOverTheCorpus is the number this slice is judged by: how many
-// of the corpus's fields it actually places, against how many a count over the
-// templates says it should reach.
+// of the corpus's fields it actually places, beside a count over the templates
+// made the way the instrument outside this repository makes it.
 //
 //	XFACORPUS=/path/to/parts go test -run PlacementOverTheCorpus -v
 //
@@ -319,7 +319,7 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 	sort.Strings(names)
 
 	var tmplCount [4]int
-	var expandedFields, expandedDraws, placedFields, placedDraws int
+	var expandedFields, expandedDraws, placedFields, placedDraws, pastTheBottom int
 	why := map[string]int{}
 	shortfall := map[string]int{}
 	for _, name := range names {
@@ -358,6 +358,9 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 			if u.Kind == "field" {
 				uf++
 				why[u.Why]++
+				if u.Why == overflows {
+					pastTheBottom++
+				}
 			} else {
 				ud++
 			}
@@ -374,8 +377,13 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 	t.Logf("template: %d fields — %d position with a literal size, %d flow, %d needing measurement",
 		tmplCount[3], tmplCount[0], tmplCount[1], tmplCount[2])
 	t.Logf("expanded: %d fields, %d draws", expandedFields, expandedDraws)
-	t.Logf("PLACED:   %d fields, %d draws — against %d predicted, %+d",
-		placedFields, placedDraws, tmplCount[0], placedFields-tmplCount[0])
+	t.Logf("PLACED:   %d fields, %d draws", placedFields, placedDraws)
+	// The one-page bound is not arithmetic. A field reported past the bottom
+	// is one whose place this slice computed and then declined to draw off the
+	// sheet, so the two together say how far the heights themselves reach.
+	t.Logf("          %d more fields have a place computed for them that falls past the bottom of the "+
+		"one content area this lays out: the arithmetic reaches %d of %d",
+		pastTheBottom, placedFields+pastTheBottom, expandedFields)
 	type kv struct {
 		k string
 		n int

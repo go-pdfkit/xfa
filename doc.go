@@ -70,28 +70,55 @@
 // never over the template, which is what pdf.js's binder does too and for the
 // same reason (bind.js:61).
 //
-// [Place] then lays a form out on one page under POSITIONED layout: a box's
+// [Place] then lays a form out on one page. Under a POSITIONED layout a box's
 // place is its own x and y added to those of every container above it, down
-// from the content area's origin, with anchorType and rotate resolved.
-// Everything it does not reach — flow layouts, sizes only text measurement
-// would give, other page areas — comes back in [Layout.Unplaced] with the
-// reason written out, one element at a time.
+// from the content area's origin, with anchorType and rotate resolved. Under a
+// FLOW layout the coordinates are thrown away and the children are stacked
+// instead, and this follows two of the six: tb and table stack downwards, each
+// child beginning where the one above it ends, and row cuts its cells from the
+// table's columnWidths. A container's height is the taller of what it holds
+// and what the template writes for it, so the heights are arrived at from the
+// leaves upwards.
 //
-// Measured over the same 560 packages, and against pdf.js's own layout run
-// over the same files:
+// Everything it does not reach — lr-tb and the two layouts that fill from the
+// right, sizes only text measurement would give, whatever falls past the
+// bottom of the one page, other page areas — comes back in [Layout.Unplaced]
+// with the reason written out, one element at a time. Nothing is dropped.
+//
+// Measured over the same 560 packages:
 //
 //	82 386 fields in the templates, 82 378 in the expanded forms
-//	13 331 placed, 69 047 reported unplaced
-//	   of the unplaced, 68 891 are under a flow layout
-//	21 933 boxes compared with pdf.js, 21 881 agreeing to within 1/100 pt
-//	    47 more differing only by pdf.js's own two-decimal rounding
-//	     5 differing, every one of them a colSpan width and none a place
+//	15 400 placed, 28 494 draws with them
+//	21 094 more have a place computed and fall past the bottom of the one
+//	       content area this lays out, so the arithmetic reaches 36 494
+//	40 435 wait on ONE thing: a draw or a field inside the stack whose height
+//	       only measuring its own text would give
 //
-// The gap between what is placed and the 70 297 fields whose own enclosing
-// subform is positioned is the finding rather than the shortfall: 556 of the
-// 560 outermost subforms are laid out "tb", so almost every positioned
-// subform hangs below a flow one, and where a flow layout puts its second
-// child is the flow layout itself.
+// # What checks the arithmetic, since pdf.js cannot
+//
+// pdf.js emits no coordinates for a child of a flow layout — it writes them
+// into a flexbox column and lets the browser stack them — so for exactly the
+// layouts this computes, its output says where the CONTAINER is and nothing
+// about where the second child went.
+//
+// It does emit the accumulation itself, as a number: a subform's style.height
+// is Math.max(extra.height + marginV, this.h || 0) (template.js:5222), and
+// extra.height is the sum this computes. So the check is on the heights:
+//
+//	 7 072 container heights this package computes, compared with pdf.js's
+//	 7 072 agreeing to within 1/100 pt, and none disagreeing
+//	 3 736 more paired but written outright in the template, and so no check
+//	   199 boxes still placed where pdf.js also emits a place: all agreeing
+//	23 540 boxes pdf.js placed by flexbox, of which none came out above or to
+//	       the left of the container it belongs to
+//
+// The 40 435 fields waiting on text measurement are the finding of this slice,
+// and they overturn an earlier one. A count over the templates said 446 fields
+// — half of one per cent — need their text measured. That count was right and
+// asked the wrong question: only 8 466 draws and 598 fields of the corpus's
+// 234 000 leaves lack a height, but a stack is a chain, and one unmeasurable
+// height leaves every sibling below it in the container with nowhere to begin.
+// Under four per cent of the leaves hold up half the fields.
 //
 // [Values] and [FieldNames] remain what they were — what the data says, and
 // what the template says, each on its own — for a caller that wants one side
