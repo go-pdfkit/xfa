@@ -129,6 +129,12 @@ var flowLayouts = map[string]bool{
 //     first content area, and whatever does not fit hangs off the bottom.
 //   - Borders, margins and insets. A child's origin is its parent's x and y,
 //     not the inside of its parent's border.
+//   - colSpan. A cell in a row or a table takes its width from the parent's
+//     columnWidths rather than from its own w (html_utils.js:81-111, 330-346).
+//     Where this slice places the first child of a row, it uses the child's
+//     own w — and that is the ONLY thing pdf.js and this package disagree
+//     about over the corpus: 5 boxes of 21 933, all of them the width, none
+//     of them the place.
 //
 // Each of those leaves its elements in [Layout.Unplaced] with the reason
 // written out. Nothing is dropped: every field and draw of the expanded form
