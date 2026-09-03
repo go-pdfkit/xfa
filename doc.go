@@ -70,7 +70,7 @@
 // never over the template, which is what pdf.js's binder does too and for the
 // same reason (bind.js:61).
 //
-// [Place] then lays a form out on one page. Under a POSITIONED layout a box's
+// [Place] then lays a form out on paper. Under a POSITIONED layout a box's
 // place is its own x and y added to those of every container above it, down
 // from the content area's origin, with anchorType and rotate resolved. Under a
 // FLOW layout the coordinates are thrown away and the children are stacked
@@ -80,45 +80,62 @@
 // and what the template writes for it, so the heights are arrived at from the
 // leaves upwards.
 //
+// Where the stack runs off the bottom, the page turns. Which page comes next
+// is a state machine rather than "another of the same" — the page set's
+// relation, each page area's occur, the parity of the page number, and the
+// explicit breaks the template writes — and [Place] follows pdf.js's
+// (template.js:4064-4236, 5418-5657). A container that MAY be split has its
+// children distributed across sheets; one that may not — a positioned layout,
+// a row, anything with keep intact — moves whole. Breaking one container in
+// two is a slice of its own.
+//
 // Everything it does not reach — lr-tb and the two layouts that fill from the
-// right, sizes only text measurement would give, whatever falls past the
-// bottom of the one page, other page areas — comes back in [Layout.Unplaced]
-// with the reason written out, one element at a time. Nothing is dropped.
+// right, sizes only text measurement would give, a container taller than any
+// sheet, a form that runs out of pages — comes back in [Layout.Unplaced] with
+// the reason written out, one element at a time. Nothing of the body is
+// dropped. A page area's own furniture is drawn once on every sheet that page
+// area makes, which is the one thing not in one-to-one correspondence with the
+// boxes on the paper.
 //
 // Measured over the same 560 packages:
 //
-//	82 386 fields in the templates, 82 378 in the expanded forms
-//	15 400 placed, 28 494 draws with them
-//	21 094 more have a place computed and fall past the bottom of the one
-//	       content area this lays out, so the arithmetic reaches 36 494
-//	40 435 wait on ONE thing: a draw or a field inside the stack whose height
+//	81 750 fields in the body of the expanded forms
+//	29 123 placed, 49 329 draws with them, on 1 237 sheets
+//	46 819 wait on ONE thing: a draw or a field inside the stack whose height
 //	       only measuring its own text would give
+//	 1 608 have a place computed and nowhere left to put it
 //
-// # What checks the arithmetic, since pdf.js cannot
+// # What checks it
 //
 // pdf.js emits no coordinates for a child of a flow layout — it writes them
 // into a flexbox column and lets the browser stack them — so for exactly the
 // layouts this computes, its output says where the CONTAINER is and nothing
-// about where the second child went.
+// about where the second child went. It does emit the accumulation itself, as
+// a number: a subform's style.height is Math.max(extra.height + marginV,
+// this.h || 0) (template.js:5222).
 //
-// It does emit the accumulation itself, as a number: a subform's style.height
-// is Math.max(extra.height + marginV, this.h || 0) (template.js:5222), and
-// extra.height is the sum this computes. So the check is on the heights:
+// It also emits one div per SHEET, with every element inside the one it
+// belongs to — which is a thing it says outright, so the page a box landed on
+// can be compared even where its coordinates cannot:
 //
-//	 7 072 container heights this package computes, compared with pdf.js's
-//	 7 072 agreeing to within 1/100 pt, and none disagreeing
-//	 3 736 more paired but written outright in the template, and so no check
-//	   199 boxes still placed where pdf.js also emits a place: all agreeing
-//	23 540 boxes pdf.js placed by flexbox, of which none came out above or to
-//	       the left of the container it belongs to
+//	 7 072 container heights this package computes, all agreeing with pdf.js's
+//	       to within 1/100 pt
+//	   450 boxes placed where pdf.js also emits a place: all agreeing
+//	   199 forms where every element of the body was placed, so that the two
+//	       are laying out the same thing
+//	   198 of those agreeing with pdf.js on the NUMBER of sheets
+//	23 006 boxes paired on them, every one on the same sheet as pdf.js put it,
+//	       and none on another
 //
-// The 40 435 fields waiting on text measurement are the finding of this slice,
-// and they overturn an earlier one. A count over the templates said 446 fields
-// — half of one per cent — need their text measured. That count was right and
-// asked the wrong question: only 8 466 draws and 598 fields of the corpus's
-// 234 000 leaves lack a height, but a stack is a chain, and one unmeasurable
-// height leaves every sibling below it in the container with nowhere to begin.
-// Under four per cent of the leaves hold up half the fields.
+// The 46 819 fields waiting on text measurement are the finding of these two
+// slices, and they overturned an earlier count twice. A count over the
+// templates said 446 fields — half of one per cent — need their text measured.
+// Only 8 466 draws and 598 fields of the corpus's 234 000 leaves lack a height,
+// but a stack is a chain, and one unmeasurable height leaves every sibling
+// below it with nowhere to begin. Then the one-page bound was found to be
+// masking more of the same: of the 21 094 fields reported as falling past the
+// bottom of the first sheet, pagination placed 14 077, and a quarter of the
+// rest turned out to sit below a leaf with no written height further down.
 //
 // [Values] and [FieldNames] remain what they were — what the data says, and
 // what the template says, each on its own — for a caller that wants one side

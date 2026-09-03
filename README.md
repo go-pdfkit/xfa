@@ -88,7 +88,7 @@ node per occurrence, so a table row written once and filled three times is
 three nodes. Layout runs over that and never over the template, which is what
 pdf.js's binder does too (`bind.js:61`).
 
-`Place` lays a form out on one page. Under a **positioned** layout a box's
+`Place` lays a form out on paper. Under a **positioned** layout a box's
 place is its own `x` and `y` added to those of every container above it, down
 from the content area's origin, with `anchorType` and `rotate` resolved. Under
 a **flow** layout the coordinates are thrown away and the children are stacked,
@@ -109,97 +109,152 @@ and this follows two of the six:
 `rl-tb` and `rl-row` fill from the right, which needs a width. Only the first
 child of an `lr-tb` is placed.
 
-**Nothing is dropped.** Every field and every draw of the expanded form comes
+**Nothing is dropped.** Every field and every draw of the form's body comes
 back in exactly one of `Page.Boxes` and `Layout.Unplaced`, and each unplaced
 one carries the reason in words. A layout that reaches part of a form is
 useful; one that silently drops the rest is not, because nothing downstream
-can tell a form that was laid out from a form that was half laid out.
+can tell a form that was laid out from a form that was half laid out. A page
+area's own furniture is the exception, and it is not a leak: a letterhead
+belongs to the sheet, so it is drawn once on every sheet that page area makes.
+
+### Where it runs off the bottom, it turns the page
+
+Which page comes next is **not** "another of the same". It is decided by a
+state machine — the page set's `relation`, each page area's `<occur>`, the
+parity of the page number, and the explicit `<breakBefore>` and `<breakAfter>`
+the template writes — and this follows pdf.js's (`template.js:4064-4236`,
+`5418-5657`) rather than assuming. Every container of the chain being flowed
+begins again at the top of the new content area, which is what pdf.js arrives
+at by re-entering the whole tree with a new space.
+
+Breaks are not a corner: **435 of the 560 forms carry a `<breakBefore>`**, and
+2 155 of the 2 561 in the corpus are `startNew="1"`, which means "a fresh sheet
+here, once".
+
+A container that would have to be **broken in two** for its parts to fit is not
+broken. pdf.js keeps `[$extra].children`, a generator and a `failingNode` to do
+that (`layout.js:38-53`); this does not. A container that *may* be split
+(`Subform[$isSplittable]`, `template.js:4940-4975`) has its children
+distributed across sheets instead, which is the same thing where the container
+itself draws nothing. One that may not — a positioned layout, a row, or
+anything with `keep intact` — moves whole, and is reported unplaced where it
+fits no sheet at all. 1 355 elements in the corpus carry
+`keep intact="contentArea"`, which is a designer saying "do not let this row
+land half on one page and half on the next".
+
+### The recursion pdf.js dies on is not in the branch it looks to be in
+
+pdf.js exhausts its stack on **7 of the 560 forms**, going round between
+`PageSet[$getNextPage]` and `PageArea[$getNextPage]`. The branch it is usually
+blamed on is the last one:
+
+```js
+this[$cleanPage]();
+return this[$getNextPage]();
+```
+
+`$cleanPage` clears the `[$extra]` of every page area and page set *below* the
+set and not the set's own, so the call returns to state no different from the
+state it left.
+
+**The defect is not in that one branch.** The branch above it does the same
+thing — a page set whose `<occur>` still allows another run resets its own
+indices and calls itself, and comes back to the same place when every page area
+below it has spent its own `<occur>`. A faithful port has to guard *every* way
+a page set can start itself again, not the one named after cleaning. So here a
+page set may restart at most once per request for a page, cleaning really does
+reset the set's own place in its list, and a page set holding neither a page
+area nor a page set says so rather than looping. Both branches were found by
+porting the machine and running it over the corpus, not by reading it: the
+second one was a stack overflow in this package's own tests.
 
 Measured over the same 560 packages:
 
 | | |
 |---|---:|
-| fields in the templates | 82 386 |
-| fields in the expanded forms | 82 378 |
-| **placed** | **15 400** |
-| draws placed with them | 28 494 |
-| a place computed, past the bottom of the one page | 21 094 |
-| waiting on the height of one leaf inside the stack | 40 435 |
-| under a layout this does not follow | 2 826 |
-| a height written as `=0mm`, which is not a length | 2 459 |
-| other | 164 |
+| fields in the body of the expanded forms | 81 750 |
+| **placed** | **29 123** |
+| draws placed with them | 49 329 |
+| sheets they came to | 1 237 |
+| waiting on the height of one leaf inside the stack | 46 819 |
+| a place computed and nowhere left to put it | 1 608 |
+| under a layout this does not follow | 2 924 |
+| a height written as `=0mm`, which is not a length | 3 649 |
+| other | 127 |
 
-### The wall is not the arithmetic
+### The prediction was 36 494, and the gap is the finding
 
-Slice 1 placed 13 331 fields and predicted that stacking over literal heights
-would take that to 62 973. It takes it to **15 400**, and the two things that
-stand in the way are not heights that need adding up.
+Slice 2 placed 15 400 fields and reported that 21 094 more had a place computed
+that fell past the bottom of the one content area it laid out — so "the
+arithmetic reaches 36 494" once the page turns. It reaches **29 123**.
 
-**Text measurement, which was measured at half of one per cent and is not.** Of
-the corpus's ~234 000 fields and draws, only 8 466 draws and 598 fields lack a
-height a template writes. But a stack is a chain: one child whose height cannot
-be said leaves every sibling below it in that container with nowhere to begin.
-Under four per cent of the leaves hold up **40 435** fields — half of them.
-The earlier count asked whether a *field* needs measuring; what decides a stack
-is whether anything above it in the same container does, and most of what is in
-a stack is `draw`.
+Of those 21 094 (20 736 counted by path), pagination placed **14 077 — 68% of
+them.** The other third were never behind pagination at all:
 
-**Pagination.** 21 094 fields have a place computed for them and fall past the
-bottom of the one content area this lays out. pdf.js does not refuse them: it
-fails the container and carries what is left onto the next page
-(`template.js:5502-5600`). That is a slice of its own, and it is worth about
-what it says.
+| what became of a field that fell past the bottom | |
+|---|---:|
+| **placed, once the sheet turned** | **14 077** |
+| held up by a leaf above it with no written height, further down the same stack | 5 156 |
+| taller than a whole content area, and cannot be broken | 885 |
+| the form ran out of pages | 405 |
+| no room inside a container that moves whole | 167 |
+| other | 46 |
 
-Taking a container's *written* height as its height, rather than the taller of
-that and its contents, was tried and measured rather than argued about. It
-computes a place for **80 821** of the 82 378 fields — nearly all of them — and
-is plausibly the rule behind the 62 973 estimate. It was rejected: it is not
-pdf.js's rule, and over the 2 323 containers where both quantities can be had,
-the written height is the wrong one 63 times, by 14 pt on average. Reaching
-further by guessing is not reaching further. Under that rule only 14 410 fields
-land on the one page anyway — fewer than the 15 400 above, because more of the
-stack advances and so more of it runs off the bottom.
+**The page-1 cutoff was masking text measurement.** A field reported as "past
+the bottom" was one whose place had been computed *on the assumption that
+everything above it on that page had a height*; once the page turns and the
+stack goes on, a quarter of them turn out to sit below a leaf that writes none.
+Which is the same shape of error as the two before it: a question asked about
+one node — does this one's place fall past the bottom? — where the structure is
+a chain.
 
-### Checked against pdf.js, which cannot see this
+### Checked against pdf.js, which CAN see this
 
-A box at coordinates this package computed proves nothing, and the check slice 1
-used cannot reach slice 2: **pdf.js emits no coordinates for a child of a flow
-layout.** It writes them into a `display: flex; flex-direction: column` div
-(`web/xfa_layer_builder.css:255-263`) and lets the browser stack them, so its
-output says where the *container* is and nothing about where the second child
-went.
+pdf.js emits one `<div class="xfaPage">` per sheet, with every element inside
+the one it belongs to. That is said outright, in the structure of the output
+rather than in a style, so page **count** and per-page **membership** are
+comparable even where a coordinate is not.
 
-It does emit the accumulation itself, as a number. A subform's `style.height`
-is `Math.max(extra.height + marginV, this.h || 0)` (`template.js:5222`), and
-`extra.height` is the sum this package computes. So the check is on the heights:
+It has to be narrowed, because pdf.js measures text and this package does not:
+on a form where a leaf writes no height pdf.js lays out elements this leaves
+unplaced, and more elements need more sheets. So the count is compared strictly
+only on the forms where every element of the body was placed.
 
 | | | |
 |---|---:|---:|
-| container heights **this package computes**, paired with pdf.js's | 7 072 | |
+| forms where this package placed **every** element of the body | 199 | |
+| of those, agreeing with pdf.js on the number of sheets | **198** | 99.5% |
+| boxes paired on those forms | 23 006 | |
+| **on the same sheet as pdf.js put them** | **23 006** | 100.00% |
+| on another sheet | **0** | 0.00% |
+| forms where fewer elements were placed, and so fewer sheets used | 221 | |
+| ... the same number of sheets | 63 | |
+| ... **MORE** sheets, which would be a defect | **0** | 0.00% |
+
+The one disagreement, `us-opm__sf813`, is not pagination: its outermost subform
+is **positioned**, and pdf.js's `checkDimensions` position arm
+(`layout.js:355-364`) sends children that reach past the bottom of the content
+area onto a second sheet. This package does not fit-check a positioned layout
+at all — it did not in slice 1 either — so it draws them where their
+coordinates say, off the bottom of the one sheet.
+
+The heights and the placements are still checked, and both still agree exactly:
+
+| | | |
+|---|---:|---:|
+| container heights this package computes, paired with pdf.js's | 7 072 | |
 | agree to within 1/100 pt | **7 072** | 100.00% |
-| disagree | **0** | 0.00% |
-| more paired, but written outright in the template — no check in agreeing | 3 736 | |
-| this package cannot measure, so has no number to compare | 2 264 | |
-
-Thirteen of those disagreed before the check accounted for one rule: pdf.js
-writes the row's height back over every cell of a row (`layout.js:135-143`), so
-what it emits for a cell is the row's height and not the cell's. Comparing the
-row's height with it checks the stretch instead, which is what pdf.js is
-saying there.
-
-Placement is still compared where pdf.js emits one: 199 boxes, all agreeing.
-For the 23 540 it placed by flexbox, all that can be checked is one-sided —
-none came out above or to the left of the container it belongs to, and 21 459
-of them sit exactly at that container's origin, which is where a flow puts its
-first child.
+| boxes where pdf.js emits a real place | 450 | |
+| agree exactly | **450** | 100.00% |
+| boxes pdf.js placed by flexbox, none above or left of its container | 51 312 | |
 
 **What none of this covers**: where inside a container the children ended up
 (two orderings come to the same total); borders, margins and insets on
-positioned layouts, which pdf.js writes as CSS `calc()`; text measurement; and
-anything under a rotated ancestor. It also could not run on 77 of the 560
-forms — 70 because pdf.js's `selectFont` dereferences a null typeface when no
-font is supplied (`fonts.js:159`), and 7 because `PageSet[$getNextPage]`
-recurses until the stack runs out.
+positioned layouts, which pdf.js writes as CSS `calc()`; text measurement;
+anything under a rotated ancestor; and breaking one container in two across a
+sheet. It also could not run on 77 of the 560 forms — 70 because pdf.js's
+`selectFont` dereferences a null typeface when no font is supplied
+(`fonts.js:159`), and 7 for the recursion above.
 
 ## Lengths
 
