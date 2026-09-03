@@ -7,7 +7,6 @@ package xfa
 
 import (
 	"fmt"
-	"math"
 )
 
 // A Rect is a box on the page, in points.
@@ -50,11 +49,16 @@ type Box struct {
 
 // An Unplaced is one element of the form this package did not place, and why.
 //
-// Every field and draw of the expanded form is in exactly one of [Page.Boxes]
+// Every field and draw of the form's BODY is in exactly one of [Page.Boxes]
 // and [Layout.Unplaced]. That is the point of the type: a layout that reaches
 // four fifths of a form is useful, and one that silently drops the other fifth
 // is not, because nothing downstream can tell a form that was laid out from a
 // form that was half laid out.
+//
+// A page area's own furniture is the one exception, and it is not a leak: a
+// letterhead belongs to the sheet rather than to the form, so it is placed
+// once on every sheet that page area makes, and appears in [Layout.Unplaced]
+// only where its page area is never used at all.
 type Unplaced struct {
 	// Node is the occurrence that was not placed.
 	Node *FormNode
@@ -72,17 +76,19 @@ type Page struct {
 	// swapped. Both are zero when the page area writes no medium, which
 	// pdf.js also declines to guess at (template.js:4108).
 	Width, Height Measure
-	// Content is the content area: where the form's body is laid out, as
-	// against the furniture the page area draws around it. Its origin is the
-	// origin of every coordinate in the body.
-	Content Rect
+	// Areas are the content areas the page offers the body, in order: the
+	// boxes the form's body is laid out in, as against the furniture the page
+	// area draws around them. Nearly every page area in the wild holds one.
+	Areas []Rect
 	// Boxes are the elements placed on it, in the order the form places them.
+	// The page area's own furniture comes first and is drawn again on every
+	// sheet that page area makes; the body follows.
 	Boxes []Box
 }
 
 // A Layout is a form placed on paper.
 type Layout struct {
-	// Pages is what was laid out. This slice places one page; see [Place].
+	// Pages is the sheets the form came to, in order.
 	Pages []Page
 	// Unplaced is everything it did not place, with a reason each.
 	Unplaced []Unplaced
@@ -113,7 +119,7 @@ var flowLayouts = map[string]bool{
 	"tb":     true,
 }
 
-// Place lays a form out on one page.
+// Place lays a form out on paper.
 //
 // # What it does
 //
@@ -144,6 +150,26 @@ var flowLayouts = map[string]bool{
 // field's and a draw's margin is not — both turn it into padding
 // (template.js:1949-1952, 2917-2920), inside a box the template already sized.
 //
+// # Where it runs off the bottom, it turns the page
+//
+// A form is longer than a sheet, and the page it goes onto next is not simply
+// "another of the same". Which page area comes next is decided by a state
+// machine — the page set's relation, each page area's <occur>, the parity of
+// the page number, and the explicit <breakBefore> and <breakAfter> the
+// template writes — and [pager] follows pdf.js's (template.js:4064-4236,
+// 5418-5657) rather than assuming. Every container of the chain being flowed
+// begins again at the top of the new content area, which is what pdf.js
+// arrives at by re-entering the whole tree with a new space.
+//
+// A container that would have to be BROKEN in two for its parts to fit is not
+// broken: pdf.js keeps [$extra].children, a generator and a failingNode to do
+// that (layout.js:38-53), and this does not. A container that may be split
+// (Subform[$isSplittable], template.js:4940-4975) has its children distributed
+// across pages instead, which is the same thing where the container itself
+// draws nothing; one that may not — a positioned layout, a row, or anything
+// kept intact — moves whole, and is reported unplaced where it fits no page at
+// all.
+//
 // # What it deliberately does not do, and reports instead
 //
 //   - lr-tb, and rl-tb, rl-row. The first wraps its children onto lines, which
@@ -153,14 +179,12 @@ var flowLayouts = map[string]bool{
 //   - Text measurement. A field whose template writes no height has no height
 //     until its text is measured — and under a stack, neither has anything
 //     below it, because where the next child begins is the height of this one.
-//   - Splitting and pagination. One page area and its first content area.
-//     What does not fit is reported rather than carried onto a second page or
-//     drawn hanging off the bottom.
+//   - Breaking one container in two across a page boundary, as above.
 //   - Borders. A child's origin is the inside of its parent's margin, not the
 //     inside of its parent's border.
 //
 // Each of those leaves its elements in [Layout.Unplaced] with the reason
-// written out. Nothing is dropped: every field and draw of the expanded form
+// written out. Nothing is dropped: every field and draw of the form's body
 // comes back in one list or the other.
 //
 // A nil form, or one with no outermost subform, lays out nothing.
@@ -175,56 +199,77 @@ func Place(form *Form) *Layout {
 	if root == nil {
 		return l
 	}
-	p := &placer{layout: l, heights: map[*FormNode]height{}}
-	page := Page{}
-	area := firstPageArea(root)
+	p := &placer{
+		layout:  l,
+		heights: map[*FormNode]height{},
+		root:    root,
+		pager:   newPager(root),
+		fired:   map[breakKey]bool{},
+		used:    map[*FormNode]bool{},
+	}
+	area, consumed := p.pager.first(root)
 	if area == nil {
 		// pdf.js reads pageAreas[0] with no guard (template.js:5482) and
 		// throws. There is nowhere to put anything.
 		p.rejectAll(root, "the form has no page area")
-		l.Pages = []Page{page}
+		l.Pages = []Page{{}}
 		return l
 	}
-	p.chosen = area
-	page.Width, page.Height = pageSize(area.Template)
-	content := area.Template.Child("contentArea")
-	if content != nil {
-		page.Content = contentRect(content)
+	if consumed != nil {
+		// $toPages consumes this one to CHOOSE the first page rather than to
+		// break to it (template.js:5474-5477), so it must not fire again.
+		p.fired[breakKey{consumed, false}] = true
 	}
-	p.page = &page
-
-	// The page area's own children are the furniture — the letterhead, the
-	// rules, the page number — and they sit in the page's frame, not the
-	// content area's. pdf.js pushes them straight into the page div
-	// (template.js:4111-4114) and the content area's div beside them.
-	p.placeAt(area, frame{avail: given(page.Height)}, nil)
-
-	if content == nil {
+	p.openArea(area, 0, true)
+	if len(contentAreas(area)) == 0 {
 		// pdf.js filters the page's children for the content area's div and
 		// indexes the result (template.js:5532-5546); with none, the loop over
 		// content areas does not run and the body is never laid out at all.
-		for _, kid := range root.Kids {
-			if kid.Kind == "pageSet" {
-				p.rejectExcept(kid, area, otherPageArea)
-				continue
-			}
-			p.rejectAll(kid, "the page area has no content area")
-		}
-		l.Pages = []Page{page}
-		return l
+		p.rejectAll(root, "the page area has no content area")
+	} else {
+		p.body(root)
 	}
-	// The body. pdf.js pushes the outermost subform's own html into the
-	// content area's div (template.js:5563-5568), so the subform is placed
-	// like any other container: at the content area's origin, offset by its
-	// own x and y, and imposing its own layout on its children.
-	//
-	// The content area's height is the room the whole body has, and it is what
-	// a stack measures a fit against: "const space = { width: contentArea.w,
-	// height: contentArea.h }" (template.js:5556).
-	p.place(root, frame{x: page.Content.X, y: page.Content.Y, avail: contentAvail(content)})
-	l.Pages = []Page{page}
+	p.rejectUnusedPages(root)
+	p.dropEmptyPages()
 	return l
 }
+
+// rejectUnusedPages reports the furniture of every page area the form never
+// reached. They are not on the paper and they are not nowhere.
+func (p *placer) rejectUnusedPages(root *FormNode) {
+	root.Walk(func(n *FormNode) {
+		if n.Kind == "pageArea" && !p.used[n] {
+			p.rejectAll(n, "its page area is never used: no page of this form is one")
+		}
+	})
+}
+
+// dropEmptyPages throws away a sheet the body put nothing on.
+//
+// pdf.js does the same (template.js:5502-5510, 5588-5590): a break can send
+// the layout onto a fresh sheet after everything has been put on the one in
+// hand, and the empty one is popped rather than shipped. A sheet carrying only
+// the page area's own furniture is empty in this sense — nothing of the FORM
+// is on it. The last sheet is kept whatever, because a form with nothing on it
+// is still a form of one page.
+func (p *placer) dropEmptyPages() {
+	var keep []Page
+	for i, page := range p.layout.Pages {
+		if p.touched[i] > 0 || len(keep) == 0 && i == len(p.layout.Pages)-1 {
+			keep = append(keep, page)
+		}
+	}
+	p.layout.Pages = keep
+}
+
+// touch records that something of the body was laid out on the sheet in hand.
+//
+// pdf.js asks the same question of the html the body returned for a content
+// area — hasSomething ||= html.children?.length > 0 (template.js:5545, 5568) —
+// so a CONTAINER holding nothing that is drawn still counts. That is not a
+// detail: thirty-eight forms of the corpus carry a break onto a last sheet
+// whose only content is an empty subform, and pdf.js ships the sheet.
+func (p *placer) touch() { p.touched[len(p.touched)-1]++ }
 
 // contentAvail is the vertical room a content area gives the body. A content
 // area that writes no height, or one nobody can read, bounds nothing: pdf.js
@@ -247,19 +292,44 @@ func given(h Measure) Measure {
 	return h
 }
 
-// A placer carries the one page being filled and the reasons for what is not
-// on it.
+// A placer carries the sheets being filled and the reasons for what is not on
+// them.
 type placer struct {
-	page   *Page
 	layout *Layout
-	// chosen is the page area being laid out. Every other one under the form's
-	// page sets holds elements this slice does not reach, and they are
-	// reported rather than left off the only sheet there is.
-	chosen *FormNode
+	root   *FormNode
 	// heights memoises what each node contributes to the stack above it. See
 	// [placer.heightOf].
 	heights map[*FormNode]height
+
+	// pager is the sequence of sheets; pageArea and slot are where in it the
+	// flow has got to, and area and avail are that content area's box and the
+	// room it gives.
+	pager    *pager
+	pageArea *FormNode
+	slot     int
+	area     Rect
+	avail    Measure
+	// touched counts, for each sheet, how much of the BODY was laid out on
+	// it. A sheet nothing of the body reached is not shipped; see
+	// [placer.dropEmptyPages].
+	touched []int
+	// chain is the run of splittable containers open between the content area
+	// and the element being placed, outermost first, and y is how far down the
+	// current content area the flow has got.
+	chain []*level
+	y     Measure
+	// blocked is why the flow stopped, once it has: a height no arithmetic
+	// gives leaves everything below it in every open container with nowhere to
+	// begin.
+	blocked string
+	// fired marks the breaks already consumed, and used the page areas
+	// actually reached.
+	fired map[breakKey]bool
+	used  map[*FormNode]bool
 }
+
+// cur is the sheet being filled.
+func (p *placer) cur() *Page { return &p.layout.Pages[len(p.layout.Pages)-1] }
 
 // A frame is where an element goes and what room it has there.
 type frame struct {
@@ -281,16 +351,6 @@ type cell struct {
 	w, h      Measure
 	stretched bool
 }
-
-// otherPageArea is why an element on a page this slice does not lay out is not
-// on the page it does.
-const otherPageArea = "it is on another page area: this slice lays out the first one only"
-
-// overflows is why an element that would begin below the room its container
-// has is not placed. pdf.js does not refuse it: it fails the container, and
-// the page loop carries what is left onto the next content area
-// (template.js:5502-5600). That is the next slice.
-const overflows = "there is no room left for it where it is stacked, and this slice does not carry what overflows onto another page"
 
 // place puts one container and everything under it on the page, at its own x
 // and y within the frame it is given.
@@ -353,14 +413,6 @@ func (p *placer) placeAt(n *FormNode, f frame, over *cell) {
 // children puts everything inside a container on the page, from the origin the
 // container ended up at, in the way the container's layout says.
 func (p *placer) children(n *FormNode, f frame) {
-	for _, kid := range n.Kids {
-		if kid.Kind == "pageSet" {
-			// The paper rather than the body: the page areas under it describe
-			// the sheets. One of them is the sheet being laid out and its
-			// furniture is already on it; the rest are not.
-			p.rejectExcept(kid, p.chosen, otherPageArea)
-		}
-	}
 	kids := contained(n)
 	// A row asks the container above it for its columns
 	// ($getSubformParent().columnWidths, template.js:5096-5099), so they are
@@ -412,8 +464,11 @@ func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, cols 
 		}
 		// pdf.js rounds before comparing and allows two points of slop
 		// (layout.js:275, 349). See [fitSlop].
-		if math.Round(float64(off+h-room)) > fitSlop {
-			p.rejectKids(kids[i:], overflows)
+		if !fits(off+h, room) {
+			// A container this deep is one that moves in one piece, so what
+			// does not fit in it cannot be carried onto another page: it would
+			// leave the rest of the container behind.
+			p.rejectKids(kids[i:], noRoomInside)
 			return
 		}
 		p.placeAt(kid, frame{x: x, y: y + off, avail: room - off, cols: cols}, nil)
@@ -525,7 +580,8 @@ func (p *placer) leaf(n *FormNode, f frame, anchor bool, over *cell) {
 		if anchor {
 			r, rotate = transformedBBox(n.Template, f.x, f.y, w, h)
 		}
-		p.page.Boxes = append(p.page.Boxes, Box{
+		page := p.cur()
+		page.Boxes = append(page.Boxes, Box{
 			Node: n, Kind: n.Kind, Path: n.Path, Rect: r, Rotate: rotate,
 			Value: n.Value, Hidden: hidden(n.Template),
 		})
@@ -549,10 +605,15 @@ func (p *placer) reject(n *FormNode, why string) {
 	p.layout.Unplaced = append(p.layout.Unplaced, Unplaced{Node: n, Kind: n.Kind, Path: n.Path, Why: why})
 }
 
-// rejectExcept records every field and draw under a container except those
-// under one subtree, which has been dealt with already.
-func (p *placer) rejectExcept(n, chosen *FormNode, why string) {
-	if n == chosen {
+// rejectAll records every field and draw under a container, so that a whole
+// subtree this cannot reach is still counted one element at a time.
+//
+// It does not descend into a page set. What is under one is the paper rather
+// than the body — the letterhead of a sheet, which is placed once per sheet
+// that page area makes — and it is reported by [placer.rejectUnusedPages] or
+// not at all.
+func (p *placer) rejectAll(n *FormNode, why string) {
+	if n.Kind == "pageSet" {
 		return
 	}
 	if n.Kind == "field" || n.Kind == "draw" {
@@ -560,18 +621,8 @@ func (p *placer) rejectExcept(n, chosen *FormNode, why string) {
 		return
 	}
 	for _, k := range n.Kids {
-		p.rejectExcept(k, chosen, why)
+		p.rejectAll(k, why)
 	}
-}
-
-// rejectAll records every field and draw under a container, so that a whole
-// subtree this cannot reach is still counted one element at a time.
-func (p *placer) rejectAll(n *FormNode, why string) {
-	n.Walk(func(k *FormNode) {
-		if k.Kind == "field" || k.Kind == "draw" {
-			p.reject(k, why)
-		}
-	})
 }
 
 // rejectKids records every field and draw under each of a list of containers.
@@ -606,22 +657,6 @@ func firstOfKind(n *FormNode, kind string) *FormNode {
 		}
 	}
 	return nil
-}
-
-// firstPageArea is the page the form starts on: the first page area under the
-// outermost subform's page set, however deeply the page sets nest.
-//
-// pdf.js reads root.pageSet.pageArea.children[0] (template.js:5439-5482) after
-// a break may have named another; this slice does not read breaks, so it takes
-// the first.
-func firstPageArea(root *FormNode) *FormNode {
-	var found *FormNode
-	root.Walk(func(k *FormNode) {
-		if found == nil && k.Kind == "pageArea" {
-			found = k
-		}
-	})
-	return found
 }
 
 // pageSize is the sheet a page area asks for.

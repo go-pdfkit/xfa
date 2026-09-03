@@ -26,6 +26,19 @@ func laid(l *Layout) []string {
 }
 
 // notLaid is every element a layout did not place, as "path: why".
+// byPage is [laid] with the sheet each box landed on in front of it, which is
+// the whole of what pagination is observable as.
+func byPage(l *Layout) []string {
+	var out []string
+	for i, p := range l.Pages {
+		for _, b := range p.Boxes {
+			out = append(out, fmt.Sprintf("%d: %s %s %g,%g %gx%g",
+				i, b.Kind, b.Path, b.X.Points(), b.Y.Points(), b.W.Points(), b.H.Points()))
+		}
+	}
+	return out
+}
+
 func notLaid(l *Layout) []string {
 	var out []string
 	for _, u := range l.Unplaced {
@@ -77,8 +90,8 @@ func TestAFormPlacedByHand(t *testing.T) {
 	if p.Width != 612 || p.Height != 792 {
 		t.Errorf("the page is %v by %v", p.Width, p.Height)
 	}
-	if p.Content != (Rect{X: 18, Y: 36, W: 576, H: 700}) {
-		t.Errorf("the content area is %+v", p.Content)
+	if len(p.Areas) != 1 || p.Areas[0] != (Rect{X: 18, Y: 36, W: 576, H: 700}) {
+		t.Errorf("the content areas are %+v", p.Areas)
 	}
 	same(t, "the page", laid(l), []string{
 		// Stamp is the page area's own furniture, so it is measured from the
@@ -167,7 +180,7 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			   <pageArea name="P1"><contentArea/><draw name="One" w="1pt" h="1pt"/></pageArea>
 			   <pageArea name="P2"><draw name="Two" w="1pt" h="1pt"/></pageArea>
 			  </pageSet></subform></template>`,
-			[]string{"f.P2.Two: it is on another page area: this slice lays out the first one only"}},
+			[]string{"f.P2.Two: its page area is never used: no page of this form is one"}},
 		{"an origin that is not a place",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" x="over there"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,

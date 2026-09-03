@@ -257,16 +257,18 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 	}
 }
 
-func TestWhatDoesNotFitIsReportedRatherThanDrawnOffTheBottom(t *testing.T) {
+func TestWhatDoesNotFitGoesOntoTheNextPage(t *testing.T) {
 	// The content area is 20 points tall. A and B fill it exactly; C would
-	// begin below it, and pdf.js would carry C onto the next page.
+	// begin below it, so it opens a second sheet and begins again at its top.
 	l := laidOut(t, page(`w="500pt" h="20pt"`, `
 	  <draw name="A" w="1pt" h="12pt"/>
 	  <draw name="B" w="1pt" h="8pt"/>
 	  <draw name="C" w="1pt" h="5pt"/>
 	  <draw name="D" w="1pt" h="5pt"/>`))
-	same(t, "the page", laid(l), []string{"draw f.A 0,0 1x12", "draw f.B 0,12 1x8"})
-	same(t, "what was left off", notLaid(l), []string{"f.C: " + overflows, "f.D: " + overflows})
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.A 0,0 1x12", "0: draw f.B 0,12 1x8",
+		"1: draw f.C 0,0 1x5", "1: draw f.D 0,5 1x5"})
+	same(t, "what was left off", notLaid(l), nil)
 }
 
 func TestTheSlopAStackIsAllowed(t *testing.T) {
@@ -298,8 +300,10 @@ func TestTheRoomAStackHasIsTheRoomItWasGiven(t *testing.T) {
 	l := laidOut(t, page(`w="500pt" h="500pt"`, `
 	  <subform name="S" layout="tb" h="10pt">
 	    <draw name="A" w="1pt" h="9pt"/><draw name="B" w="1pt" h="9pt"/></subform>`))
-	same(t, "the page", laid(l), []string{"draw f.S.A 0,0 1x9"})
-	same(t, "what was left off", notLaid(l), []string{"f.S.B: " + overflows})
+	// S may be split, so B is not refused: the sheet turns and S begins again
+	// at the top of the next one with its ten points of room back.
+	same(t, "the sheets", byPage(l), []string{"0: draw f.S.A 0,0 1x9", "1: draw f.S.B 0,0 1x9"})
+	same(t, "what was left off", notLaid(l), nil)
 }
 
 func TestAContentAreaWithNoHeightBoundsNothing(t *testing.T) {
@@ -385,4 +389,37 @@ func TestReadingAMargin(t *testing.T) {
 			t.Errorf("%s: the vertical insets came to %v", tc.what, got.vertical())
 		}
 	}
+}
+
+func TestARowWhoseCellHasNoHeightHasNoHeightEither(t *testing.T) {
+	// A row is as tall as its tallest cell, so one cell nobody can measure
+	// leaves the row unmeasured — and the table above it with it.
+	l := laidOut(t, page(`w="500pt" h="500pt"`, `
+	  <subform name="T" layout="table" columnWidths="10pt 10pt">
+	    <subform name="R" layout="row"><draw name="A" w="1pt"/></subform>
+	  </subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	same(t, "what was left off", notLaid(l), []string{
+		"f.T.R.A: " + noHeightWritten,
+		// The reason names where the stack actually stopped, which is the table
+		// rather than the subform above it.
+		"f.B: a table layout stacks its children, and the height of the one above it is not computed: " +
+			noHeightWritten})
+}
+
+func TestInsideAContainerThatMovesWholeAStackStillStops(t *testing.T) {
+	// G is kept intact, so what is inside it is laid out by the stacking that
+	// does not turn pages. A margin nobody can read stops the container that
+	// writes it, and the height it therefore has not got stops the stack it
+	// sits in.
+	l := laidOut(t, page(`w="500pt" h="500pt"`, `
+	  <subform name="G" layout="tb"><keep intact="contentArea"/>
+	    <subform name="Bad" layout="tb"><margin topInset="=1"/>
+	      <draw name="A" w="1pt" h="5pt"/></subform>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the page", laid(l), nil)
+	same(t, "what was left off", notLaid(l), []string{
+		"f.G.Bad.A: the container that stacks it writes a margin that is not in lengths",
+		"f.G.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
+			"its margin is not written in lengths"})
 }
