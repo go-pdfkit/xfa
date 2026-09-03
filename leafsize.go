@@ -70,14 +70,28 @@ type leafSize struct {
 	hasW, hasH bool
 }
 
-// measureText breaks a string into lines no wider than maxWidth and says how
-// wide and how tall the block comes out. It is layoutText
-// (html_utils.js:196-205) over the no-font glyphs of [textMeasure.addString].
-func measureText(text string, maxWidth Measure) (w, h Measure) {
-	var t textMeasure
-	t.addString(text)
-	w, h, _ = t.compute(maxWidth)
-	return w, h
+// paraOf is the paragraph margin a leaf's own <para> asks for. pdf.js reads
+// spaceAbove and spaceBelow into the outermost FontInfo of the measurement
+// (html_utils.js:222-229), where nothing but a <p> of a rich text ever reads
+// them again.
+func paraOf(n *Node) (paraMargin, string) {
+	m := paraMargin{hasTop: true, hasBottom: true}
+	para := n.Child("para")
+	if para == nil {
+		return m, ""
+	}
+	above, _, err := para.Measure("spaceAbove")
+	if err != nil {
+		return m, "its paragraph is written as spaceAbove=" + quoted(para.Get("spaceAbove")) +
+			", which is not a length"
+	}
+	below, _, err := para.Measure("spaceBelow")
+	if err != nil {
+		return m, "its paragraph is written as spaceBelow=" + quoted(para.Get("spaceBelow")) +
+			", which is not a length"
+	}
+	m.top, m.bottom = above, below
+	return m, ""
 }
 
 // textBox is layoutNode's answer for a node holding a string.
@@ -92,8 +106,8 @@ func measureText(text string, maxWidth Measure) (w, h Measure) {
 //
 // ok is false when there is nothing to measure; why is set when there is
 // something and it cannot be measured.
-func textBox(text string, in insets, own, wide Measure) (w, h Measure, ok bool, why string) {
-	if text == "" {
+func textBox(c content, para paraMargin, in insets, own, wide Measure) (w, h Measure, ok bool, why string) {
+	if c.empty() {
 		return 0, 0, false, ""
 	}
 	maxWidth := wide
@@ -103,7 +117,9 @@ func textBox(text string, in insets, own, wide Measure) (w, h Measure, ok bool, 
 	if math.IsInf(float64(maxWidth), -1) {
 		return 0, 0, false, noWidthToBreakAt
 	}
-	w, h = measureText(text, maxWidth-in.horizontal())
+	t := newTextMeasure(para)
+	c.push(t)
+	w, h, _ = t.compute(maxWidth - in.horizontal())
 	return w + in.horizontal(), h + in.vertical(), true, ""
 }
 
@@ -139,14 +155,18 @@ func drawSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 	if colW != 0 {
 		own = colW
 	}
-	text, readable, has := leafText(n)
+	c, readable, has := leafContent(n)
 	if !readable {
 		return leafSize{}, notMeasurable
 	}
 	if !has {
 		return leafSize{}, ""
 	}
-	w, h, measured, why := textBox(text, in, own, wide)
+	para, why := paraOf(n.Template)
+	if why != "" {
+		return leafSize{}, why
+	}
+	w, h, measured, why := textBox(c, para, in, own, wide)
 	if why != "" {
 		return leafSize{}, why
 	}
@@ -209,7 +229,7 @@ func widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string)
 		}
 		w, h = size, size
 	} else {
-		text, readable, has := leafText(n)
+		c, readable, has := leafContent(n)
 		if !readable {
 			return 0, 0, notMeasurable
 		}
@@ -217,9 +237,13 @@ func widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string)
 		if err != nil {
 			return 0, 0, widthNotALength(n.Template)
 		}
+		para, why := paraOf(n.Template)
+		if why != "" {
+			return 0, 0, why
+		}
 		measured := false
 		if has {
-			w, h, measured, why = textBox(text, in, own, wide)
+			w, h, measured, why = textBox(c, para, in, own, wide)
 			if why != "" {
 				return 0, 0, why
 			}
@@ -263,9 +287,13 @@ func captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why 
 	if !ok {
 		return 0, 0, marginNotLengths
 	}
-	text, readable := valueText(capt.Child("value"))
+	c, readable := valueContent(capt.Child("value"))
 	if !readable {
 		return 0, 0, notMeasurable
+	}
+	para, why := paraOf(capt)
+	if why != "" {
+		return 0, 0, why
 	}
 	reserve, err := captionReserve(capt)
 	if err != nil {
@@ -284,7 +312,7 @@ func captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why 
 	// A caption has no w of its own — the class does not carry one
 	// (template.js:1144-1169) — so `node.w || availableSpace.width` is always
 	// the room it has.
-	width, height, _, why = textBox(text, in, 0, space)
+	width, height, _, why = textBox(c, para, in, 0, space)
 	if why != "" {
 		return 0, 0, why
 	}

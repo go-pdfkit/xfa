@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -26,6 +27,14 @@ type Node struct {
 	Attr map[string]string
 	// Text is the character data directly inside it, with surrounding space
 	// trimmed. A <text> element's caption lives here.
+	//
+	// Inside a rich text — the XHTML of an <exData contentType="text/html"> —
+	// it is empty, and the character data is in "#text" children of [Node.Kids]
+	// instead. Rich text is the one place where WHERE the text sits among the
+	// elements decides how it reads: half of the corpus's <p> elements hold
+	// text both before and after a <span>, and a paragraph's height is how
+	// many lines its words come to in the order they are written. See
+	// [parseXML].
 	Text string
 	// Kids are the elements inside it, in order. Order is not decoration: a
 	// subform laid out top-to-bottom places its children in it.
@@ -81,6 +90,76 @@ func (n *Node) Walk(visit func(*Node)) {
 	}
 }
 
+// textKind is what a run of character data inside a rich text is called as a
+// child of the element holding it. pdf.js gives it the same name: XmlObject
+// moves what it has accumulated into a child called "#text" the moment an
+// element child arrives, and again when the element closes (xfa_object.js:865-887).
+const textKind = "#text"
+
+// addRun records one run of character data inside a rich text, normalised the
+// way pdf.js normalises it and appended to the run before it.
+//
+// The normalisation is done here, run by run, rather than once over the joined
+// text, because that is where pdf.js does it (XFAParser.onText, parser.js:60-73,
+// and XhtmlObject[$onText], xhtml.js:224-237) and the two are not the same: a
+// run ending in spaces followed by one beginning with them collapses to two
+// spaces done separately and to one done together.
+func (n *Node) addRun(raw string) {
+	s := breakableNbsp(raw)
+	// The parser drops whitespace between elements that do not accept it, and
+	// trims the rest. XhtmlObject accepts it everywhere but in <body> and
+	// <html> (xhtml.js:206, 220-222); everything else in the tree, the <exData>
+	// included, takes the default of not accepting it (xfa_object.js:183-185).
+	if !acceptsWhitespace(n.Kind) {
+		if strings.TrimSpace(s) == "" {
+			return
+		}
+		s = strings.TrimSpace(s)
+	}
+	// A newline inside a rich text is not a line break: pdf.js REMOVES it and
+	// then collapses what runs of whitespace are left into one space, unless
+	// the element asks for its spaces to be kept (xhtml.js:225-229). 44 099
+	// spans of the corpus ask.
+	s = crlf.ReplaceAllString(s, "")
+	if !strings.Contains(n.Attr["style"], "xfa-spacerun:yes") {
+		s = spaces.ReplaceAllString(s, " ")
+	}
+	if s == "" {
+		return
+	}
+	if k := len(n.Kids) - 1; k >= 0 && n.Kids[k].Kind == textKind {
+		n.Kids[k].Text += s
+		return
+	}
+	n.Kids = append(n.Kids, &Node{Kind: textKind, Attr: map[string]string{}, Text: s})
+}
+
+// acceptsWhitespace says an element keeps character data that is nothing but
+// space. Only <body> and <html> do not (NoWhites, xhtml.js:206).
+func acceptsWhitespace(kind string) bool {
+	switch kind {
+	case "body", "html", "exData":
+		return false
+	}
+	return true
+}
+
+// breakableNbsp is pdf.js's first act on any text it reads: the LAST no-break
+// space of a run becomes an ordinary one (parser.js:61-63). The comment there
+// says why — "normally by definition a &nbsp is unbreakable but in real life
+// Acrobat can break strings on &nbsp".
+func breakableNbsp(s string) string {
+	return nbsps.ReplaceAllStringFunc(s, func(run string) string {
+		return run[:len(run)-len("\u00a0")] + " "
+	})
+}
+
+var (
+	nbsps  = regexp.MustCompile("\u00a0+")
+	crlf   = regexp.MustCompile("[\r\n]+")
+	spaces = regexp.MustCompile(`\s+`)
+)
+
 // maxDepth is how deep a template may nest before this stops following it. A
 // form built by a designer runs to a dozen levels; anything past this is a
 // file playing games rather than a form.
@@ -98,7 +177,7 @@ const maxDepth = 256
 // A document whose XML does not close is refused. Half a template is not a
 // form, and laying one out would put half a form on paper without saying so.
 func ParseTemplate(r io.Reader) (*Node, error) {
-	root, err := parseXML(r)
+	root, err := parseXML(r, true)
 	if err != nil {
 		return nil, fmt.Errorf("xfa: reading the template: %w", err)
 	}
@@ -114,7 +193,7 @@ func ParseTemplate(r io.Reader) (*Node, error) {
 //
 // Its errors carry no package prefix. The caller knows which part it asked
 // for and says so, which is the half a reader of the message needs.
-func parseXML(r io.Reader) (*Node, error) {
+func parseXML(r io.Reader, rich bool) (*Node, error) {
 	dec := xml.NewDecoder(r)
 	// A template may name entities the reader does not carry; treating an
 	// unknown one as itself keeps a form readable rather than refusing it over
@@ -124,6 +203,9 @@ func parseXML(r io.Reader) (*Node, error) {
 
 	var stack []*Node
 	var root *Node
+	// richAt is where in the stack the <exData contentType="text/html"> that
+	// opened a rich text sits, or minus one outside one.
+	richAt := -1
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -144,6 +226,9 @@ func parseXML(r io.Reader) (*Node, error) {
 				}
 				n.Attr[a.Name.Local] = a.Value
 			}
+			if rich && richAt < 0 && n.Kind == "exData" && n.Attr["contentType"] == richContent {
+				richAt = len(stack)
+			}
 			if len(stack) == 0 {
 				if root != nil {
 					return nil, fmt.Errorf("there is more than one root")
@@ -160,13 +245,20 @@ func parseXML(r io.Reader) (*Node, error) {
 			// MISmatched one, though — <subform> closed by </template> pops
 			// the subform and then the template — which is why a file written
 			// carelessly still reads as the form it meant.
+			if richAt == len(stack)-1 {
+				richAt = -1
+			}
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) == 0 {
 				continue
 			}
+			n := stack[len(stack)-1]
+			if richAt >= 0 {
+				n.addRun(string(t))
+				continue
+			}
 			if s := strings.TrimSpace(string(t)); s != "" {
-				n := stack[len(stack)-1]
 				if n.Text == "" {
 					n.Text = s
 				} else {

@@ -68,14 +68,67 @@ type glyph struct {
 
 // A textMeasure accumulates the glyphs of a leaf's text and then breaks them
 // into lines. It is pdf.js's TextMeasure (text.js:145-297) with the font stack
-// left out, because nothing survives having no font: FontInfo replaces the
-// typeface, posture, weight, size and letterSpacing with the default's the
-// moment the typeface is not found, and the one thing it does keep — the
-// paragraph margins — reaches the height only through addPara, which pdf.js
-// calls for a <p> of a rich text (xhtml.js:490-495) and for nothing else.
-// Rich text is not measured here, so there is no stack to keep.
+// reduced to the one thing that survives having no font.
+//
+// FontInfo replaces the typeface, the posture, the weight, the SIZE and the
+// letterSpacing with the default's the moment the typeface is not found
+// (text.js:42-46), so a <span style="font-size:14pt"> measures at ten points
+// like everything else. What it does keep is the paragraph margins, and those
+// reach the height through addPara — which pdf.js calls for a <p> of a rich
+// text (xhtml.js:490-495) and for nothing else.
 type textMeasure struct {
 	glyphs []glyph
+	// paras is the stack of paragraph margins, innermost last, and is never
+	// empty: the leaf's own <para> is at the bottom of it.
+	paras []paraMargin
+	// extraHeight is what addPara has added.
+	extraHeight Measure
+}
+
+// A paraMargin is the space a paragraph asks for above and below itself.
+//
+// pdf.js carries four insets and adds two of them to the height
+// (text.js:165-168). The left and the right reach nothing at all: the width a
+// line is broken at is the container's, and a paragraph's own left and right
+// margins are never taken off it.
+type paraMargin struct {
+	top, bottom Measure
+	// hasTop and hasBottom say the style wrote them. pdf.js writes NaN for an
+	// inset a style says nothing about and fills it in from the paragraph
+	// outside (text.js:116-120), which is a third state a Measure has no room
+	// for.
+	hasTop, hasBottom bool
+}
+
+// newTextMeasure starts a measurement whose outermost paragraph margin is the
+// leaf's own <para>: pdf.js reads spaceAbove and spaceBelow into it
+// (html_utils.js:222-229). A leaf holding a plain string is not affected by
+// its own <para> at all, because nothing then calls addPara.
+func newTextMeasure(outer paraMargin) *textMeasure {
+	return &textMeasure{paras: []paraMargin{outer}}
+}
+
+// pushPara opens a nested paragraph, inheriting each inset the style did not
+// write from the paragraph outside it (text.js:104-131).
+func (t *textMeasure) pushPara(m paraMargin) {
+	outer := t.paras[len(t.paras)-1]
+	if !m.hasTop {
+		m.top = outer.top
+	}
+	if !m.hasBottom {
+		m.bottom = outer.bottom
+	}
+	t.paras = append(t.paras, m)
+}
+
+// popPara closes one.
+func (t *textMeasure) popPara() { t.paras = t.paras[:len(t.paras)-1] }
+
+// addPara charges the paragraph in hand to the block's height
+// (text.js:165-168).
+func (t *textMeasure) addPara() {
+	m := t.paras[len(t.paras)-1]
+	t.extraHeight += m.top + m.bottom
 }
 
 // addString adds one run of text.
@@ -157,7 +210,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 		case g.eol:
 			width = max(width, lineW)
 			lineW = 0
-			height += lineH
+			height += lineH + t.extraHeight
 			lineH = gh
 			lastSpacePos, lastSpaceWidth = -1, 0
 			first = false
@@ -166,7 +219,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 			// next line, so it costs nothing.
 			width = max(width, lineW)
 			lineW = 0
-			height += lineH
+			height += lineH + t.extraHeight
 			lineH = gh
 			lastSpacePos, lastSpaceWidth = -1, 0
 			broken, first = true, false
@@ -176,7 +229,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 			lineW += g.w
 			lastSpacePos = i
 		case lineW+g.w > maxWidth:
-			height += lineH
+			height += lineH + t.extraHeight
 			lineH = gh
 			if lastSpacePos != -1 {
 				// Back to the last space and start the line again from just
@@ -196,6 +249,6 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 		}
 	}
 	width = max(width, lineW)
-	height += lineH
+	height += lineH + t.extraHeight
 	return widthFactor * width, height, broken
 }
