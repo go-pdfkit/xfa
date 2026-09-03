@@ -104,8 +104,7 @@ const textKind = "#text"
 // and XhtmlObject[$onText], xhtml.js:224-237) and the two are not the same: a
 // run ending in spaces followed by one beginning with them collapses to two
 // spaces done separately and to one done together.
-func (n *Node) addRun(raw string) {
-	s := breakableNbsp(raw)
+func (n *Node) addRun(s string) {
 	// The parser drops whitespace between elements that do not accept it, and
 	// trims the rest. XhtmlObject accepts it everywhere but in <body> and
 	// <html> (xhtml.js:206, 220-222); everything else in the tree, the <exData>
@@ -148,6 +147,10 @@ func acceptsWhitespace(kind string) bool {
 // space of a run becomes an ordinary one (parser.js:61-63). The comment there
 // says why — "normally by definition a &nbsp is unbreakable but in real life
 // Acrobat can break strings on &nbsp".
+//
+// It is not decoration. A no-break space is a place a line may NOT be broken,
+// and a space is a place it may; turning the last one of a run into a space is
+// what lets "Form\u00a0AB428" come apart at the end of a column.
 func breakableNbsp(s string) string {
 	return nbsps.ReplaceAllStringFunc(s, func(run string) string {
 		return run[:len(run)-len("\u00a0")] + " "
@@ -254,11 +257,19 @@ func parseXML(r io.Reader, rich bool) (*Node, error) {
 				continue
 			}
 			n := stack[len(stack)-1]
+			// The no-break space is made breakable before anything else is
+			// done with the text, wherever the text is, because that is where
+			// pdf.js does it: XFAParser.onText (parser.js:60-73) is every text
+			// node of an XFA document, the datasets as much as the template.
+			// It decides line breaking outright — "Line 2 of Form\u00a0AB(S11)"
+			// in a 63-point column is four lines with the space and three
+			// without it — and 31 container heights of the corpus turned on it.
+			raw := breakableNbsp(string(t))
 			if richAt >= 0 {
-				n.addRun(string(t))
+				n.addRun(raw)
 				continue
 			}
-			if s := strings.TrimSpace(string(t)); s != "" {
+			if s := strings.TrimSpace(raw); s != "" {
 				if n.Text == "" {
 					n.Text = s
 				} else {

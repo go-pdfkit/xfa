@@ -32,15 +32,16 @@ const checkButtonSize Measure = 10
 // none at all is four edges of this (template.js:906-914).
 const defaultEdgeThickness Measure = 0.5
 
-// noTextToMeasure is why a leaf whose height the template leaves out still has
-// none: there is nothing to measure.
+// boundByTheRoom is why a leaf that neither the template nor a measurement
+// gives a size still has none.
 //
-// pdf.js answers null rather than nought here, and the difference is the whole
-// point: `if (h && this.h === "")` (template.js:1923) never runs, so the leaf
-// keeps its height UNWRITTEN and the stack above it still cannot say where the
-// next child begins. A leaf of no height and a leaf of unknown height are not
-// the same thing.
-const noTextToMeasure = "the template writes no height for it and it holds no text to measure one from"
+// It is the one thing [placer.unmeasured] refuses: pdf.js answers the room the
+// leaf has where the template writes a largest size (html_utils.js:311-317),
+// and the room is a quantity this measurement does not carry.
+func boundByTheRoom(large string) string {
+	return "the template writes no size for it, it holds no text to measure one from, and " + large +
+		" would bound it against the room it has, which this measurement does not carry"
+}
 
 // noWidthToBreakAt is why a leaf with text is still not measured: there is no
 // width to break its lines at. See [noWidth].
@@ -121,6 +122,44 @@ func textBox(c content, para paraMargin, in insets, own, wide Measure) (w, h Mea
 	c.push(t)
 	w, h, _ = t.compute(maxWidth - in.horizontal())
 	return w + in.horizontal(), h + in.vertical(), true, ""
+}
+
+// unmeasured is how tall — or how wide — a leaf is where neither the template
+// nor its text says.
+//
+// pdf.js does not leave it unwritten. computeBbox (html_utils.js:290-324) is
+// called on every draw and every field before it returns
+// (template.js:1982, 2938), and the box it makes is what the container above
+// adds to its stack. Where the dimension is still unwritten it is the SMALLEST
+// the template will have — minH, or minW — and nought instead under a
+// positioned parent that writes a size of its own.
+//
+// The one case this refuses is maxH (or maxW) above nought, where pdf.js takes
+// the ROOM the leaf has rather than anything the template wrote. That is a
+// quantity the measurement does not carry — a height is arrived at before the
+// room it will go in is known, which is the whole reason the measurement is a
+// pass of its own — and no leaf of the 560-form corpus that needs it writes
+// one.
+func (p *placer) unmeasured(n *FormNode, small, large, parentDim string) (Measure, string) {
+	hi, _, err := n.Template.Measure(large)
+	if err != nil {
+		return 0, "its largest size is written as " + large + "=" + quoted(n.Template.Get(large)) +
+			", which is not a length"
+	}
+	if hi > 0 {
+		return 0, boundByTheRoom(large)
+	}
+	if up, ok := p.up[n]; ok && layoutOf(up) == "position" {
+		if _, written, e := up.Template.Measure(parentDim); written && e == nil {
+			return 0, ""
+		}
+	}
+	lo, _, err := n.Template.Measure(small)
+	if err != nil {
+		return 0, "its smallest size is written as " + small + "=" + quoted(n.Template.Get(small)) +
+			", which is not a length"
+	}
+	return lo, ""
 }
 
 // leafSize is how big a field or a draw comes out where the template writes no

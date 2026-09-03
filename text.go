@@ -210,7 +210,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 		case g.eol:
 			width = max(width, lineW)
 			lineW = 0
-			height += lineH + t.extraHeight
+			height += lineH
 			lineH = gh
 			lastSpacePos, lastSpaceWidth = -1, 0
 			first = false
@@ -219,7 +219,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 			// next line, so it costs nothing.
 			width = max(width, lineW)
 			lineW = 0
-			height += lineH + t.extraHeight
+			height += lineH
 			lineH = gh
 			lastSpacePos, lastSpaceWidth = -1, 0
 			broken, first = true, false
@@ -229,7 +229,7 @@ func (t *textMeasure) compute(maxWidth Measure) (w, h Measure, broken bool) {
 			lineW += g.w
 			lastSpacePos = i
 		case lineW+g.w > maxWidth:
-			height += lineH + t.extraHeight
+			height += lineH
 			lineH = gh
 			if lastSpacePos != -1 {
 				// Back to the last space and start the line again from just

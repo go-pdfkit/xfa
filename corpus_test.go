@@ -519,21 +519,23 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 			continue
 		}
 		forms++
+		fm := Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false))
+		root := rootName(fm)
 		theirs := map[string][]judgeBox{}
 		for _, b := range dump.Boxes {
 			if b.Kind == "container" {
 				continue
 			}
-			if n := leafName(b.Chain); n != "" {
+			if n := chainKey(b.Chain, root); n != "" {
 				theirs[b.Kind+" "+n] = append(theirs[b.Kind+" "+n], b)
 			}
 		}
 		mine := map[string][]Box{}
-		l := Place(Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false)))
+		l := Place(fm)
 		for _, p := range l.Pages {
 			for _, b := range p.Boxes {
-				if b.Node.Name != "" {
-					mine[b.Kind+" "+b.Node.Name] = append(mine[b.Kind+" "+b.Node.Name], b)
+				if k := ourChain(b.Path); b.Node.Name != "" {
+					mine[b.Kind+" "+k] = append(mine[b.Kind+" "+k], b)
 				}
 			}
 		}
@@ -622,6 +624,63 @@ func leafName(chain string) string {
 	return chain
 }
 
+// chainKey is the name a box is paired by: its WHOLE path through the form
+// rather than its own name.
+//
+// Pairing by the last name alone is what slices 1 to 3 did, and it holds only
+// while the two sides list the same names in the same order. It stops holding
+// the moment a form writes the same name in several places: us-irs__fw9 has
+// six subforms called Bullet1, in three different lists on three sheets, and
+// once every one of them has a height they are six entries of one list that
+// have to line up. They do not have to: pdf.js emits what it laid out, in the
+// order it laid it out, and this walks the expanded form. Pairing on the chain
+// makes a mispairing show up as an unpaired box instead of as a disagreement.
+//
+// pdf.js's chain begins with the page area's own name, because the page div
+// carries it; ours begins at the form's outermost subform. So the key is
+// whatever follows the first mention of that subform. A box outside it — the
+// page area's own furniture — has no key and is not paired.
+func chainKey(chain, root string) string {
+	for i := 0; i+len(root) <= len(chain); i++ {
+		if chain[i:i+len(root)] != root {
+			continue
+		}
+		if (i == 0 || chain[i-1] == '.') && (i+len(root) == len(chain) || chain[i+len(root)] == '.') {
+			return chain[i:]
+		}
+	}
+	return ""
+}
+
+// ourChain is the same key from this package's own path, which numbers the
+// second and later of repeated siblings — "Row[2]" — where pdf.js writes the
+// name again. The numbers come off so the two can be compared; what they were
+// keeping apart is kept apart by the ORDER of the list the key leads to.
+func ourChain(path string) string {
+	var b strings.Builder
+	for i := 0; i < len(path); i++ {
+		if path[i] == '[' {
+			j := strings.IndexByte(path[i:], ']')
+			if j < 0 {
+				break
+			}
+			i += j
+			continue
+		}
+		b.WriteByte(path[i])
+	}
+	return b.String()
+}
+
+// rootName is what the form's outermost subform is called, which is where
+// pdf.js's chain and this package's path meet. See [chainKey].
+func rootName(form *Form) string {
+	if r := firstOfKind(form.Root, "subform"); r != nil {
+		return r.Name
+	}
+	return ""
+}
+
 // apart is how far two boxes are from each other, in points, on their furthest
 // side. It is false when pdf.js did not produce a comparable box: a size it
 // left to the browser, or a rotated ancestor an offset cannot carry down.
@@ -704,17 +763,18 @@ func TestFlowHeightsAgainstPdfjs(t *testing.T) {
 			continue
 		}
 		forms++
+		fm := Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false))
+		root := rootName(fm)
 		theirs := map[string][]judgeBox{}
 		for _, b := range dump.Boxes {
 			if b.Kind != "container" {
 				continue
 			}
-			if n := leafName(b.Chain); n != "" {
+			if n := chainKey(b.Chain, root); n != "" {
 				theirs[n] = append(theirs[n], b)
 			}
 		}
 		mine := map[string][]containerHeight{}
-		fm := Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false))
 		p := &placer{heights: map[heightKey]height{}, up: map[*FormNode]*FormNode{}}
 		p.mapUp(fm.Root)
 		collect(p, fm.Root, bodyWide(fm), containerHeight{}, mine)
@@ -824,7 +884,8 @@ func collect(p *placer, n *FormNode, wide Measure, row containerHeight, out map[
 				_, ok, errH := n.Template.Measure("h")
 				c = containerHeight{h: h, measured: why == "", written: ok && errH == nil}
 			}
-			out[n.Name] = append(out[n.Name], c)
+			k := ourChain(n.Path)
+			out[k] = append(out[k], c)
 		}
 	}
 	var into containerHeight
@@ -947,7 +1008,8 @@ func TestPaginationAgainstPdfjs(t *testing.T) {
 			t.Errorf("%s: %v", form, err)
 			continue
 		}
-		l := Place(Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false)))
+		fm := Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false))
+		l := Place(fm)
 		theirPages += dump.Pages
 		ourPages += len(l.Pages)
 		if len(l.Unplaced) != 0 {
@@ -970,22 +1032,23 @@ func TestPaginationAgainstPdfjs(t *testing.T) {
 		wholeAgree++
 		// The count agrees, so the sheets can be lined up and membership asked
 		// of them. Boxes are paired as [TestPlacementAgainstPdfjs] pairs them:
-		// by kind and by the element's own name, and only where both sides
-		// produced the same number of them.
+		// by kind and by the whole chain of names down to the element, and
+		// only where both sides produced the same number of them.
+		root := rootName(fm)
 		theirs := map[string][]int{}
 		for _, b := range dump.Boxes {
 			if b.Kind == "container" {
 				continue
 			}
-			if n := leafName(b.Chain); n != "" {
+			if n := chainKey(b.Chain, root); n != "" {
 				theirs[b.Kind+" "+n] = append(theirs[b.Kind+" "+n], b.Page)
 			}
 		}
 		mine := map[string][]int{}
 		for i, p := range l.Pages {
 			for _, b := range p.Boxes {
-				if b.Node.Name != "" {
-					mine[b.Kind+" "+b.Node.Name] = append(mine[b.Kind+" "+b.Node.Name], i)
+				if k := ourChain(b.Path); b.Node.Name != "" {
+					mine[b.Kind+" "+k] = append(mine[b.Kind+" "+k], i)
 				}
 			}
 		}

@@ -635,17 +635,24 @@ func (p *placer) leaf(n *FormNode, f frame, anchor bool, over *cell) {
 			p.reject(n, why)
 			return
 		}
-		if !okW && size.hasW {
-			w, okW = size.w, true
+		if !okW {
+			if w, okW = size.w, size.hasW; !okW {
+				// pdf.js does not leave it unwritten either. See
+				// [placer.unmeasured].
+				if w, why = p.unmeasured(n, "minW", "maxW", "w"); why != "" {
+					p.reject(n, why)
+					return
+				}
+			}
 		}
-		if !okH && size.hasH {
-			h, okH = size.h, true
+		if !okH {
+			if h, okH = size.h, size.hasH; !okH {
+				if h, why = p.unmeasured(n, "minH", "maxH", "h"); why != "" {
+					p.reject(n, why)
+					return
+				}
+			}
 		}
-	}
-	if !okW || !okH {
-		p.reject(n, "the template does not write its "+missing(okW, okH)+
-			", and it holds no text to measure one from")
-		return
 	}
 	r, rotate := Rect{X: f.x, Y: f.y, W: w, H: h}, 0
 	if anchor {
