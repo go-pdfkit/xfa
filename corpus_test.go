@@ -714,9 +714,10 @@ func TestFlowHeightsAgainstPdfjs(t *testing.T) {
 			}
 		}
 		mine := map[string][]containerHeight{}
-		collect(&placer{heights: map[*FormNode]height{}},
-			Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false)).Root,
-			containerHeight{}, mine)
+		fm := Expand(readNode(t, name, true), readNode(t, stem+".datasets.xml", false))
+		p := &placer{heights: map[heightKey]height{}, up: map[*FormNode]*FormNode{}}
+		p.mapUp(fm.Root)
+		collect(p, fm.Root, bodyWide(fm), containerHeight{}, mine)
 		for k, ms := range mine {
 			ts := theirs[k]
 			if len(ts) != len(ms) {
@@ -791,7 +792,23 @@ type containerHeight struct {
 // that reports thirteen disagreements over the corpus, every one of them the
 // stretch rather than the arithmetic. Comparing our ROW height with it checks
 // the stretch instead, which is what pdf.js is saying there.
-func collect(p *placer, n *FormNode, row containerHeight, out map[string][]containerHeight) {
+func bodyWide(form *Form) Measure {
+	root := firstOfKind(form.Root, "subform")
+	if root == nil {
+		return unbounded
+	}
+	area, _ := newPager(root).first(root)
+	if area == nil {
+		return unbounded
+	}
+	areas := contentAreas(area)
+	if len(areas) == 0 {
+		return unbounded
+	}
+	return contentWide(areas[0])
+}
+
+func collect(p *placer, n *FormNode, wide Measure, row containerHeight, out map[string][]containerHeight) {
 	switch n.Kind {
 	case "subform", "exclGroup", "area":
 		// pdf.js emits nothing at all for a hidden container
@@ -803,7 +820,7 @@ func collect(p *placer, n *FormNode, row containerHeight, out map[string][]conta
 		if n.Name != "" {
 			c := row
 			if !c.stretched {
-				h, why := p.heightOf(n)
+				h, why := p.heightOf(n, wide, 0)
 				_, ok, errH := n.Template.Measure("h")
 				c = containerHeight{h: h, measured: why == "", written: ok && errH == nil}
 			}
@@ -811,12 +828,29 @@ func collect(p *placer, n *FormNode, row containerHeight, out map[string][]conta
 		}
 	}
 	var into containerHeight
-	if lay := layoutOf(n); lay == "row" || lay == "rl-row" {
-		h, why := p.contentHeight(n)
+	lay := layoutOf(n)
+	if lay == "row" || lay == "rl-row" {
+		h, why := p.contentHeight(n, wide)
 		into = containerHeight{h: h, measured: why == "", stretched: true}
 	}
+	inner := noWidth
+	if in, ok := marginOf(n.Template); ok {
+		inner = innerWide(n, wide, 0, lay, in)
+	}
+	cols := p.colsOf(n)
+	col := 0
 	for _, k := range contained(n) {
-		collect(p, k, into, out)
+		kw := inner
+		if lay == "row" || lay == "rl-row" {
+			kw = noWidth
+			if len(cols) > 0 {
+				kw = remainingWide(cols, col)
+				if !hidden(k.Template) {
+					_, col = columnWidth(cols, col, colSpanOf(k.Template))
+				}
+			}
+		}
+		collect(p, k, kw, into, out)
 	}
 }
 

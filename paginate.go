@@ -20,7 +20,10 @@ import (
 // restarts at nought (template.js:5055-5070) — so all their origins and all
 // their room have to be recomputed together. See [placer.rebase].
 type level struct {
-	in insets
+	// node is the container itself, which [placer.seat] reads its layout and
+	// its own width from when it works out the room its children have.
+	node *FormNode
+	in   insets
 	// own is the height the template writes for it, or nought; limit is the
 	// same thing as a bound, unbounded where none is written. The two differ
 	// because a container with no height still holds its contents, and one
@@ -37,7 +40,12 @@ type level struct {
 	// content may reach. All four are absolute on the page and all four are
 	// recomputed at every page boundary.
 	base, x, top, bottom Measure
-	cols                 []Measure
+	// wide is the room it gives its children across the page, which is where
+	// their text is broken. It does not change at a page boundary — a content
+	// area is as wide on the second sheet as on the first — but it is
+	// recomputed with the rest.
+	wide Measure
+	cols []Measure
 }
 
 // flowable says a container is one this slice carries across a page boundary:
@@ -105,7 +113,7 @@ func (p *placer) body(root *FormNode) {
 	// corpus; the check is here so that one would not be flowed as if its
 	// origin were its top left.
 	if !flowable(root) || anchored(root.Template) || rotateOf(root.Template) != 0 {
-		p.place(root, frame{x: p.area.X, y: p.area.Y, avail: p.avail})
+		p.place(root, frame{x: p.area.X, y: p.area.Y, avail: p.avail, wide: p.wide})
 		return
 	}
 	if p.fires(root, false) {
@@ -160,13 +168,13 @@ func (p *placer) flow(n *FormNode) {
 // field, a draw, or a container that has to move in one piece. It returns
 // false where the flow cannot go on.
 func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
-	h, why := p.heightOf(kid)
+	h, why := p.heightOf(kid, lv.wide, 0)
 	if why != "" {
 		// Where THIS one begins is known exactly, so it is placed. Where the
 		// one after it begins is this one's height, so it is not, and neither
 		// is anything after that, at this level or at any above it.
 		p.touch()
-		p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, cols: lv.cols}, nil)
+		p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, wide: lv.wide, cols: lv.cols}, nil)
 		p.blocked = fmt.Sprintf(
 			"a %s layout stacks its children, and the height of the one above it is not computed: %s", lay, why)
 		return false
@@ -192,7 +200,7 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 		}
 	}
 	p.touch()
-	p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, cols: lv.cols}, nil)
+	p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, wide: lv.wide, cols: lv.cols}, nil)
 	p.y += h
 	return true
 }
@@ -252,14 +260,14 @@ func (p *placer) push(n *FormNode, xoff, yoff Measure) bool {
 		return false
 	}
 	p.touch()
-	lv := &level{in: in, xoff: xoff, yoff: yoff}
+	lv := &level{in: in, xoff: xoff, yoff: yoff, node: n}
 	if h, okH, errH := n.Template.Measure("h"); okH && errH == nil {
 		lv.own, lv.limit = h, h
 	} else {
 		lv.limit = unbounded
 	}
 	lv.cols, _ = columnWidths(n.Template)
-	p.seat(lv, p.chainX(), p.chainBottom())
+	p.seat(lv, p.chainX(), p.chainBottom(), p.chainWide())
 	p.chain = append(p.chain, lv)
 	return true
 }
@@ -273,12 +281,16 @@ func (p *placer) push(n *FormNode, xoff, yoff Measure) bool {
 // own y is NOT taken out of it — pdf.js hands the whole content area's height
 // down whatever the offset — which is why the room is measured from after the
 // offset rather than to an absolute bottom.
-func (p *placer) seat(lv *level, parentX, parentBottom Measure) {
+func (p *placer) seat(lv *level, parentX, parentBottom, parentWide Measure) {
 	room := min(lv.limit, parentBottom-p.y) - lv.in.vertical()
 	lv.base = p.y
 	lv.x = parentX + lv.xoff + lv.in.left
 	lv.top = p.y + lv.yoff + lv.in.top
 	lv.bottom = lv.top + room
+	// A container of the flowing chain is always a tb or a table
+	// ([flowable]), and neither is ever a cell of a row, so there is no
+	// column width to hand [innerWide].
+	lv.wide = innerWide(lv.node, parentWide, 0, layoutOf(lv.node), lv.in)
 	p.y = lv.top
 }
 
@@ -312,6 +324,13 @@ func (p *placer) chainBottom() Measure {
 	return p.chain[len(p.chain)-1].bottom
 }
 
+func (p *placer) chainWide() Measure {
+	if len(p.chain) == 0 {
+		return p.wide
+	}
+	return p.chain[len(p.chain)-1].wide
+}
+
 // rebase begins every open container again at the top of the content area the
 // flow has just moved to.
 //
@@ -321,10 +340,10 @@ func (p *placer) chainBottom() Measure {
 // can be done in one pass, without laying anything out twice.
 func (p *placer) rebase() {
 	p.y = p.area.Y
-	x, bottom := p.area.X, p.area.Y+p.avail
+	x, bottom, wide := p.area.X, p.area.Y+p.avail, p.wide
 	for _, lv := range p.chain {
-		p.seat(lv, x, bottom)
-		x, bottom = lv.x, lv.bottom
+		p.seat(lv, x, bottom, wide)
+		x, bottom, wide = lv.x, lv.bottom, lv.wide
 	}
 }
 
@@ -383,8 +402,9 @@ func (p *placer) openArea(area *FormNode, slot int, fresh bool) {
 	if slot < len(areas) {
 		p.area = contentRect(areas[slot])
 		p.avail = contentAvail(areas[slot])
+		p.wide = contentWide(areas[slot])
 	} else {
-		p.area, p.avail = Rect{}, 0
+		p.area, p.avail, p.wide = Rect{}, 0, 0
 	}
 	p.rebase()
 }
@@ -406,5 +426,5 @@ func (p *placer) startPage(area *FormNode) {
 	p.layout.Pages = append(p.layout.Pages, page)
 	p.touched = append(p.touched, 0)
 	p.used[area] = true
-	p.placeAt(area, frame{avail: given(page.Height)}, nil)
+	p.placeAt(area, frame{avail: given(page.Height), wide: given(page.Width)}, nil)
 }

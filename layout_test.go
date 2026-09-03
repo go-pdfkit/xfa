@@ -192,15 +192,15 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 		{"a width nobody wrote",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <field name="A" h="1pt"/></subform></template>`,
-			[]string{"f.A: the template does not write its width, which only measuring its text would give"}},
+			[]string{"f.A: the template does not write its width, and it holds no text to measure one from"}},
 		{"a height nobody wrote",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
-			  <field name="A" w="1pt"/></subform></template>`,
-			[]string{"f.A: the template does not write its height, which only measuring its text would give"}},
+			  <draw name="A" w="1pt"/></subform></template>`,
+			[]string{"f.A: the template does not write its height, and it holds no text to measure one from"}},
 		{"neither one nor the other",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <draw name="A"/></subform></template>`,
-			[]string{"f.A: the template does not write its width or its height, which only measuring its text would give"}},
+			[]string{"f.A: the template does not write its width or its height, and it holds no text to measure one from"}},
 		{"a container anchored by a corner, with no size of its own",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" anchorType="bottomLeft"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,

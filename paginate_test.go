@@ -351,11 +351,11 @@ func TestOneHeightNobodyCanArriveAtStopsEveryStackAboveIt(t *testing.T) {
 	  <draw name="C" w="1pt" h="5pt"/>`))
 	same(t, "the sheets", byPage(l), nil)
 	same(t, "what was left off", notLaid(l), []string{
-		"f.In.A: " + noHeightWritten,
+		"f.In.A: the template does not write its height, and it holds no text to measure one from",
 		"f.In.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
-			noHeightWritten,
+			noTextToMeasure,
 		"f.C: a tb layout stacks its children, and the height of the one above it is not computed: " +
-			noHeightWritten})
+			noTextToMeasure})
 }
 
 func TestABreakBeforeTheWholeFormWithNowhereToGoLeavesNothingBehind(t *testing.T) {

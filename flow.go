@@ -98,6 +98,21 @@ func hidden(n *Node) bool {
 	}
 }
 
+// noWidth is the width a cell has where the row holding it cuts its cells
+// from columns the container above writes none of.
+//
+// pdf.js does not have an answer here: getAvailableSpace reads
+// node[$extra].columnWidths for a row (layout.js:184-189) and that property is
+// only set where the parent wrote some (template.js:5095-5101), so it throws.
+// A cell whose own width is written is unaffected, because pdf.js's maxWidth
+// is `node.w || availableSpace.width` and takes the first of the two; only a
+// cell that has to be measured against the space it is in has nothing to be
+// measured against, and it says so rather than being given a width.
+//
+// It is minus infinity rather than a NaN so that it compares equal to itself
+// and can be a key of the memo.
+var noWidth = Measure(math.Inf(-1))
+
 // height is what one node contributes to the flow of the container above it,
 // or why that cannot be said.
 type height struct {
@@ -105,23 +120,46 @@ type height struct {
 	why string
 }
 
+// A heightKey names one node measured at one particular width.
+//
+// The width belongs in the key, and that is the change this slice makes to the
+// shape of the measurement. Before it, a node's height was a property of the
+// node: every height was written in the template and adding them up needed
+// nothing else. A leaf whose height is its text broken into lines has a
+// DIFFERENT height in a narrow container and in a wide one, so the same draw
+// under two containers is two heights and the memo has to say which.
+type heightKey struct {
+	n *FormNode
+	// wide is the room the node has where it sits, and colW is the width the
+	// columns of an enclosing row give it, or nought where no row does. Both
+	// are needed because pdf.js applies them at different moments: a DRAW in a
+	// row has its w replaced by its columns before its text is measured
+	// (fixDimensions, html_utils.js:326-345, called at template.js:1901 before
+	// layoutNode at :1908), and a FIELD has it replaced AFTER (:2876, against
+	// layoutNode at :2816) — so a draw is broken at its own column and a field
+	// at every column left in the row.
+	wide, colW Measure
+}
+
 // heightOf is the vertical room a node takes where its parent stacks its
 // children, and it is the whole of this slice: a tb container's second child
 // begins where its first one ends, so every height between the two has to be
 // arrived at before either can be placed.
 //
-// It is memoised per node because a container is measured once for the stack
-// it sits in and again when it is laid out, and a form nests a dozen deep.
-func (p *placer) heightOf(n *FormNode) (Measure, string) {
-	if m, ok := p.heights[n]; ok {
+// It is memoised per node AND per width, because a container is measured once
+// for the stack it sits in and again when it is laid out, and a form nests a
+// dozen deep.
+func (p *placer) heightOf(n *FormNode, wide, colW Measure) (Measure, string) {
+	k := heightKey{n, wide, colW}
+	if m, ok := p.heights[k]; ok {
 		return m.h, m.why
 	}
 	// A cycle cannot arise — the expanded form is a tree — but a node being
 	// measured is marked before its children are, so that a change which broke
 	// that would stop rather than recurse for ever.
-	p.heights[n] = height{why: measuringItself}
-	h, why := p.measure(n)
-	p.heights[n] = height{h, why}
+	p.heights[k] = height{why: measuringItself}
+	h, why := p.measure(n, wide, colW)
+	p.heights[k] = height{h, why}
 	return h, why
 }
 
@@ -130,7 +168,7 @@ func (p *placer) heightOf(n *FormNode) (Measure, string) {
 const measuringItself = "it contains itself, which a form cannot"
 
 // measure computes what heightOf memoises.
-func (p *placer) measure(n *FormNode) (Measure, string) {
+func (p *placer) measure(n *FormNode, wide, colW Measure) (Measure, string) {
 	if hidden(n.Template) {
 		// It is drawn nowhere and takes no room. It is still placed, and
 		// carries [Box.Hidden] to say so.
@@ -141,16 +179,23 @@ func (p *placer) measure(n *FormNode) (Measure, string) {
 		switch {
 		case err != nil:
 			return 0, fmt.Sprintf("its height is written as h=%q, which is not a length", n.Template.Get("h"))
-		case !ok:
-			return 0, noHeightWritten
+		case ok:
+			return h, ""
 		}
-		return h, ""
+		size, why := p.leafSize(n, wide, colW)
+		if why != "" {
+			return 0, why
+		}
+		if !size.hasH {
+			return 0, noTextToMeasure
+		}
+		return size.h, ""
 	}
 	in, ok := marginOf(n.Template)
 	if !ok {
 		return 0, "its margin is not written in lengths"
 	}
-	content, why := p.contentHeight(n)
+	content, why := p.contentHeight(n, innerWide(n, wide, colW, layoutOf(n), in))
 	if why != "" {
 		return 0, why
 	}
@@ -169,21 +214,60 @@ func (p *placer) measure(n *FormNode) (Measure, string) {
 	return max(content+in.vertical(), own), ""
 }
 
-// noHeightWritten is the answer for a leaf whose height only its own text
-// could give. pdf.js's layoutNode (html_utils.js:207-288) supplies it by
-// measuring, and there is no other fallback.
-const noHeightWritten = "the template does not write its height, which only measuring its text would give"
+// innerWide is how much horizontal room a container gives what it holds.
+//
+// pdf.js works it out in two steps. The container's own space is
+// min(this.w || Infinity, availableSpace.width) (template.js:5065) — a width
+// written as NOUGHT is no width, and the space it was given is used instead —
+// and getAvailableSpace then takes its left and right insets off that for tb,
+// table, lr-tb and rl-tb (layout.js:180-195), handing a positioned layout its
+// space unchanged (:196-199). A row does neither: it cuts its cells from the
+// columnWidths of the container above it, which [placer.contentHeight] and
+// [placer.cells] do per cell.
+//
+// Two things get in before the min. A container inside a ROW has its own width
+// replaced by the columns it spans (fixDimensions, html_utils.js:328-345), and
+// a TABLE that writes no width takes the sum of its own columnWidths for one
+// (:352-356). Both are pdf.js's, and both happen before the space is computed.
+func innerWide(n *FormNode, wide, colW Measure, lay string, in insets) Measure {
+	own, ok, err := n.Template.Measure("w")
+	if err != nil {
+		return noWidth
+	}
+	switch {
+	case colW != 0:
+		own, ok = colW, true
+	case (!ok || own == 0) && lay == "table":
+		if cols, has := columnWidths(n.Template); has {
+			own, ok = 0, true
+			for _, c := range cols {
+				own += c
+			}
+		}
+	}
+	if ok && own != 0 {
+		wide = min(wide, own)
+	}
+	switch lay {
+	case "tb", "table", "lr-tb", "rl-tb":
+		return wide - in.horizontal()
+	}
+	return wide
+}
 
 // contentHeight is how tall what a container holds comes out, before the
 // container's own margin and its own written height are taken into account.
-func (p *placer) contentHeight(n *FormNode) (Measure, string) {
+//
+// wide is the room the container gives its children, which [innerWide] has
+// already worked out.
+func (p *placer) contentHeight(n *FormNode, wide Measure) (Measure, string) {
 	kids := contained(n)
 	switch lay := layoutOf(n); lay {
 	case "tb", "table":
 		// pdf.js: extra.height += h (layout.js:145-159), from nought.
 		var sum Measure
 		for _, k := range kids {
-			h, why := p.heightOf(k)
+			h, why := p.heightOf(k, wide, 0)
 			if why != "" {
 				return 0, why
 			}
@@ -193,9 +277,18 @@ func (p *placer) contentHeight(n *FormNode) (Measure, string) {
 	case "row", "rl-row":
 		// pdf.js: extra.height = Math.max(extra.height, h) (layout.js:135-143),
 		// and every cell already placed is then stretched to it.
+		cols := p.colsOf(n)
 		var tallest Measure
+		col := 0
 		for _, k := range kids {
-			h, why := p.heightOf(k)
+			cellWide, cellCol := noWidth, Measure(0)
+			if len(cols) > 0 {
+				cellWide = remainingWide(cols, col)
+				if !hidden(k.Template) {
+					cellCol, col = columnWidth(cols, col, colSpanOf(k.Template))
+				}
+			}
+			h, why := p.heightOf(k, cellWide, cellCol)
 			if why != "" {
 				return 0, why
 			}
@@ -217,7 +310,7 @@ func (p *placer) contentHeight(n *FormNode) (Measure, string) {
 			if err != nil {
 				return 0, fmt.Sprintf("it holds something whose origin is written as y=%q, which is not a place", k.Template.Get("y"))
 			}
-			h, why := p.heightOf(k)
+			h, why := p.heightOf(k, wide, 0)
 			if why != "" {
 				return 0, why
 			}
@@ -225,6 +318,28 @@ func (p *placer) contentHeight(n *FormNode) (Measure, string) {
 		}
 		return reach, ""
 	}
+}
+
+// colsOf is the columnWidths a row cuts its cells from: the ones the container
+// above it writes ($getSubformParent().columnWidths, template.js:5096-5099).
+func (p *placer) colsOf(n *FormNode) []Measure {
+	cols, _ := columnWidths(p.up[n].Template)
+	return cols
+}
+
+// remainingWide is the width a cell of a row is measured against: every column
+// left in the row, not just the ones it spans.
+//
+// pdf.js: Math.sumPrecise(columnWidths.slice(currentColumn)) (layout.js:186-189).
+// A cell wider than its own columns is what a form gets when a caption runs
+// long, and pdf.js measures it against the rest of the row rather than against
+// its own cell.
+func remainingWide(cols []Measure, col int) Measure {
+	var w Measure
+	for _, c := range cols[min(col, len(cols)):] {
+		w += c
+	}
+	return w
 }
 
 // colSpanOf is how many of a table's columns a cell takes.
