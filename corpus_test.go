@@ -554,13 +554,16 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 					// at that origin, which is where the first child goes, or
 					// below and to the right of it, which is where the rest
 					// do. Above or to the left of it would be a defect.
-					switch {
-					case ts[i].X == nil || ts[i].Y == nil:
+					if ts[i].X == nil || ts[i].Y == nil {
 						unpairable++
-					case float64(m.X) < *ts[i].X-0.05 || float64(m.Y) < *ts[i].Y-0.05:
+						continue
+					}
+					tx, ty := leftTop(*ts[i].X, *ts[i].Y, ts[i].W, ts[i].H)
+					switch {
+					case float64(m.X) < tx-0.05 || float64(m.Y) < ty-0.05:
 						above++
 						worst[form]++
-					case float64(m.X) <= *ts[i].X+0.05 && float64(m.Y) <= *ts[i].Y+0.05:
+					case float64(m.X) <= tx+0.05 && float64(m.Y) <= ty+0.05:
 						atOrigin++
 					default:
 						below++
@@ -614,6 +617,35 @@ func TestPlacementAgainstPdfjs(t *testing.T) {
 		}
 		t.Logf("  %6d in %s", e.n, e.k)
 	}
+}
+
+// leftTop is the corner of one of pdf.js's boxes, with a negative width or
+// height folded into the origin the way this package folds it.
+//
+// # A judge has to count the way its subject counts
+//
+// Four draws of us-ssa__ss-5-ar-inst are written w="-0.106in" and the like: a
+// NEGATIVE width. A negative extent is not a box that reaches left of where it
+// was put. pdfium normalises a widget's rectangle before it uses it —
+// CFX_RectF::Normalize moves the origin by the extent and takes its magnitude,
+// and the XFA field and widget code call it (cxfa_fffield.cpp:293,
+// cxfa_ffwidget.cpp:288) — and this package does the same in [transformedBBox].
+//
+// pdf.js does not, because CSS cannot: it writes width:-0.11px, which a
+// browser ignores. So its dump keeps the negative number, and comparing OUR
+// normalised left edge with THEIR unnormalised origin reported four boxes
+// outside the container holding them that are the same box on both sides.
+//
+// It is the shape the last slice's name pairing had: the fault was in the
+// comparison and it announced itself as a disagreement about the subject.
+func leftTop(x, y float64, w, h *float64) (float64, float64) {
+	if w != nil {
+		x += math.Min(0, *w)
+	}
+	if h != nil {
+		y += math.Min(0, *h)
+	}
+	return x, y
 }
 
 // leafName is the element's own name at the end of a dumped chain.
@@ -688,10 +720,13 @@ func apart(m Box, t judgeBox) (float64, bool) {
 	if t.Turned || t.X == nil || t.Y == nil || t.W == nil || t.H == nil {
 		return 0, false
 	}
+	// Both sides are compared as the corner and the extent of the same box.
+	// See [leftTop].
+	x, y := leftTop(*t.X, *t.Y, t.W, t.H)
 	d := 0.0
 	for _, pair := range [][2]float64{
-		{float64(m.X), *t.X}, {float64(m.Y), *t.Y},
-		{float64(m.W), *t.W}, {float64(m.H), *t.H},
+		{float64(m.X), x}, {float64(m.Y), y},
+		{float64(m.W), math.Abs(*t.W)}, {float64(m.H), math.Abs(*t.H)},
 	} {
 		if v := math.Abs(pair[0] - pair[1]); v > d {
 			d = v

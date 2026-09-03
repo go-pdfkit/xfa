@@ -194,6 +194,23 @@ func TestWhatARowDoesWithTheAwkwardCases(t *testing.T) {
 	}
 }
 
+// TestACalculatedHeightIsATrueNoughtInAStack is what this slice moves: the
+// corpus writes h="=0mm" on 955 rules and lines, and a stack has to carry the
+// height NOUGHT past them rather than stop there.
+func TestACalculatedHeightIsATrueNoughtInAStack(t *testing.T) {
+	l := laidOut(t, page(`w="500pt" h="500pt"`, `
+	  <draw name="A" w="10pt" h="7pt"/>
+	  <draw name="Line" w="10pt" h="=0mm"/>
+	  <draw name="B" w="10pt" h="11pt"/>`))
+	same(t, "the page", laid(l), []string{
+		"draw f.A 0,0 10x7",
+		// The rule is drawn, nought tall, where A ends...
+		"draw f.Line 0,7 10x0",
+		// ... and B begins there too, rather than being reported unplaced.
+		"draw f.B 0,7 10x11",
+	})
+}
+
 func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 	for _, tc := range []struct {
 		what string
@@ -212,18 +229,18 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 					boundByTheRoom("maxH"),
 			}},
 		{"a height written in something that is not a length",
-			`<draw name="A" w="1pt" h="=0mm"/><draw name="B" w="1pt" h="1pt"/>`,
+			`<draw name="A" w="1pt" h="96px"/><draw name="B" w="1pt" h="1pt"/>`,
 			[]string{
-				`f.A: its size is written as w="1pt" h="=0mm", which is not a size`,
+				`f.A: its size is written as w="1pt" h="96px", which is not a size`,
 				`f.B: a tb layout stacks its children, and the height of the one above it is not computed: ` +
-					`its height is written as h="=0mm", which is not a length`,
+					`its height is written as h="96px", which is not a length`,
 			}},
 		{"a container's own height written in something that is not a length",
-			`<subform name="S" h="=0mm"><draw name="A" w="1pt" h="1pt"/></subform>
+			`<subform name="S" h="96px"><draw name="A" w="1pt" h="1pt"/></subform>
 			 <draw name="B" w="1pt" h="1pt"/>`,
 			[]string{
 				`f.B: a tb layout stacks its children, and the height of the one above it is not computed: ` +
-					`its height is written as h="=0mm", which is not a length`,
+					`its height is written as h="96px", which is not a length`,
 			}},
 		{"a margin that is not in lengths, on the container that stacks",
 			`<margin topInset="1pt" rightInset="a bit"/><draw name="A" w="1pt" h="1pt"/>`,
@@ -427,7 +444,7 @@ func TestInsideAContainerThatMovesWholeAStackStillStops(t *testing.T) {
 	// sits in.
 	l := laidOut(t, page(`w="500pt" h="500pt"`, `
 	  <subform name="G" layout="tb"><keep intact="contentArea"/>
-	    <subform name="Bad" layout="tb"><margin topInset="=1"/>
+	    <subform name="Bad" layout="tb"><margin topInset="96px"/>
 	      <draw name="A" w="1pt" h="5pt"/></subform>
 	    <draw name="B" w="1pt" h="5pt"/></subform>`))
 	same(t, "the page", laid(l), nil)
