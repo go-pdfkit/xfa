@@ -159,6 +159,35 @@
 //	117 378 boxes paired on them, every one on the same sheet as pdf.js put it,
 //	        and none on another
 //
+// # Where a box goes ACROSS a line
+//
+// pdf.js says nothing about that either — an lr-tb container's children go in
+// a flexbox div of class xfaLr and a table row's cells in one of class xfaRow,
+// and the browser places them — so it was unjudged in both directions until
+// pdfium was asked. pdfium is a renderer rather than a DOM emitter and
+// computes the answer outright (CalculateRowChildPosition,
+// cxfa_contentlayoutprocessor.cpp:2028-2160), though nothing in public/
+// returns it and its own suite asserts no coordinate anywhere; the dump comes
+// from a probe added to its embedder tests. It lays out 559 of the 560 forms,
+// against pdf.js's 483.
+//
+//	    959 leaves under a container that wraps its children onto lines, all
+//	        agreeing with pdfium on x
+//	 19 516 leaves under a table row, 19 448 agreeing on x
+//	167 632 leaves under neither — the control — 160 022 agreeing
+//
+// 64 of the 68 row disagreements are on ca-cra__rc1-fill-11-25e, where 552 of
+// 804 CONTROL leaves disagree too, so x on that form is not comparable at all.
+// The other four are on fr-cerfa__cerfa_12818, whose control agrees entirely:
+// the row puts the cell where pdfium does, and pdfium then places the
+// positioned children two levels inside it 3.6 pt further right than their
+// written x. That one is open.
+//
+// pdfium runs the form's scripts and measures text with real fonts, neither of
+// which this does, so y and the sheet a box landed on are informative rather
+// than a verdict there. X survives: a positioned box's x is its written
+// attribute, and a line member's is arithmetic over written widths.
+//
 // A box is compared as the same box on both sides. Four draws of
 // us-ssa__ss-5-ar-inst are written w="-0.106in", and a negative extent is not a
 // box reaching left of where it was put: pdfium normalises a widget's

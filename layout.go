@@ -196,15 +196,29 @@ var flowLayouts = map[string]bool{
 //
 // A nil form, or one with no outermost subform, lays out nothing.
 func Place(form *Form) *Layout {
+	l, _ := placeForm(form)
+	return l
+}
+
+// placeForm is [Place] with the placer it worked in handed back.
+//
+// The placer holds what the layout arrived at on the way to the boxes — the
+// packing of every container that wraps its children onto lines, and each
+// container's layout parent — and none of it is derivable from the boxes
+// afterwards. Which LINE a box went on is the one this exists for:
+// [TestIntraLinePlacementProperties] has to know that before it can ask
+// anything about the line, and reading it off the coordinates would be asking
+// the answer to grade itself.
+func placeForm(form *Form) (*Layout, *placer) {
 	l := &Layout{}
 	if form == nil {
-		return l
+		return l, newPlacer()
 	}
 	// pdf.js takes the same one: "const root = this.subform.children[0]"
 	// (template.js:5439). A template with no subform is not a form.
 	root := firstOfKind(form.Root, "subform")
 	if root == nil {
-		return l
+		return l, newPlacer()
 	}
 	p := newPlacer()
 	p.layout, p.root, p.pager = l, root, newPager(root)
@@ -214,7 +228,7 @@ func Place(form *Form) *Layout {
 		// throws. There is nowhere to put anything.
 		p.rejectAll(root, "the form has no page area")
 		l.Pages = []Page{{}}
-		return l
+		return l, p
 	}
 	if consumed != nil {
 		// $toPages consumes this one to CHOOSE the first page rather than to
@@ -233,7 +247,7 @@ func Place(form *Form) *Layout {
 	}
 	p.rejectUnusedPages(root)
 	p.dropEmptyPages()
-	return l
+	return l, p
 }
 
 // mapUp records each container's layout parent, which is where a row reads
