@@ -237,7 +237,7 @@ func TestAWrappingContainerStopsWhereThePagesRunOut(t *testing.T) {
 	// free; the second has nowhere to go and says so, and so does everything
 	// after it.
 	l := laidOut(t, `<template><subform name="f" layout="tb">
-	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	  <pageSet><occur max="1"/><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
 	    <contentArea w="100pt" h="15pt"/></pageArea></pageSet>
 	  <subform name="S" layout="lr-tb" w="100pt">
 	    <draw name="A" w="60pt" h="40pt"/><draw name="B" w="60pt" h="40pt"/></subform></subform></template>`)
@@ -292,7 +292,7 @@ func TestABreakInsideAWrappingContainerIsRead(t *testing.T) {
 
 func TestABreakAfterInsideAWrappingContainerStopsWhereThePagesDo(t *testing.T) {
 	l := laidOut(t, `<template><subform name="f" layout="tb">
-	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	  <pageSet><occur max="1"/><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
 	    <contentArea w="100pt" h="500pt"/></pageArea></pageSet>
 	  <subform name="S" layout="lr-tb" w="100pt">
 	    <subform name="T"><breakAfter targetType="pageArea" startNew="1"/>
@@ -305,7 +305,7 @@ func TestABreakAfterInsideAWrappingContainerStopsWhereThePagesDo(t *testing.T) {
 
 func TestABreakBeforeOnTheFirstChildOfAWrappingContainerStopsWhereThePagesDo(t *testing.T) {
 	l := laidOut(t, `<template><subform name="f" layout="tb">
-	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	  <pageSet><occur max="1"/><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
 	    <contentArea w="100pt" h="500pt"/></pageArea></pageSet>
 	  <subform name="S" layout="lr-tb" w="100pt">
 	    <subform name="T"><breakBefore targetType="pageArea" startNew="1"/>
@@ -542,7 +542,7 @@ func TestWhatStopsInsideALineStopsEverythingAfterIt(t *testing.T) {
 	// and there is no second sheet to carry the rest onto — so the flow stops
 	// inside it, and everything after it on the lines above stops too.
 	l := laidOut(t, `<template><subform name="f" layout="tb">
-	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	  <pageSet><occur max="1"/><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
 	    <contentArea w="100pt" h="500pt"/></pageArea></pageSet>
 	  <subform name="S" layout="lr-tb" w="100pt">
 	    <draw name="A" w="100pt" h="10pt"/>

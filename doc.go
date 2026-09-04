@@ -114,6 +114,11 @@
 // area comes out one per sheet, hanging over the bottom, which is what pdf.js
 // draws.
 //
+// A page set says which sheet comes after this one, and its <occur> is what
+// bounds a form: a page AREA's max caps how many sheets it makes in one run of
+// the set holding it, and starting the set again offers it afresh. Both
+// references say so and neither can quite carry it out — see [pager.cleanKids].
+//
 // Everything it does not reach — rl-row, which fills a row from the right, a
 // form that runs out of pages, an element with no room inside a container that
 // moves whole — comes back in [Layout.Unplaced] with the reason
@@ -125,8 +130,7 @@
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	79 851 placed, 148 188 draws with them, on 3 040 sheets
-//	 1 887 are past the last sheet the page set gives
+//	81 738 placed, 151 305 draws with them, on 3 088 sheets
 //	     9 are anchored by a corner, with no size of their own
 //	     3 have no room inside a container that moves in one piece
 //

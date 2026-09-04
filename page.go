@@ -22,25 +22,26 @@ import "strings"
 //
 // pdf.js exhausts its stack on seven of the five hundred and sixty forms in
 // the corpus, recursing between PageSet[$getNextPage] (template.js:4176-4236)
-// and PageArea[$getNextPage] (:4061-4075). The last branch of the page set is
+// and PageArea[$getNextPage] (:4061-4075): ca-cra__rc1-fill-11-25e,
+// ca-cra__t2042-fill-24e, ca-cra__t2042-fill-25e, us-ssa__ha-4631,
+// us-ssa__ssa-372, us-ssa__ssa-5062 and us-ssa__ssa-766. Every one of them is
+// a page set with no <occur> over page areas that write max="1".
 //
-//	this[$cleanPage]();
-//	return this[$getNextPage]();
-//
-// and $cleanPage (:4160-4167) deletes the [$extra] of every page area and page
-// set BELOW it and not its own — so pageIndex and pageSetIndex are still at
-// the end of their lists, every test fails again, and the call repeats for
-// ever on unchanged state. It is a real defect on real files.
-//
-// The defect is not in that one branch. The branch above it does the same
-// thing — a page set whose <occur> still allows another run resets its own
+// The branch that restarts a usable page set (:4222-4227) resets its own
 // indices and calls itself, and comes back to the same place when every page
-// area below it has spent its own <occur>. That is the shape a faithful port
-// has to guard: EVERY way a page set can start itself again, not the one that
-// happens to be named after cleaning. So a page set may restart at most once
-// per request for a page, and a page set holding neither a page area nor a
-// page set says so rather than looping. Both were found by porting the
-// machine and running it, not by reading it.
+// area below it has spent its own <occur> — because it does NOT clean them on
+// the way. The branch below it, which does clean them (:4230-4231), is never
+// reached, since a page set with no <occur> is usable for ever. So neither
+// branch can make progress and the stack goes.
+//
+// Guarding the recursion is not the same thing as answering it, and slice 3
+// did the first. What restarting a page set MEANS is that its page areas are
+// offered again — see [pager.cleanKids], where both references say so — and
+// once the restart cleans them it terminates because it has a page to give,
+// rather than because a counter stopped it. The guard stays for the one shape
+// that can still come back on unchanged state: a page set holding only nested
+// page sets that yield nothing. And a page set holding neither a page area nor
+// a page set says there is no next page rather than looping.
 type pager struct {
 	// areas is the page set the form starts from: the outermost subform's
 	// first, which is the one pdf.js reads (template.js:5443).
@@ -142,7 +143,28 @@ func (p *pager) first(root *FormNode) (*FormNode, *FormNode) {
 	}
 	p.used[area] = 1
 	set := p.within[area]
-	st := &setState{numberOfUse: 1, pageSetIndex: 0}
+	// pdf.js writes pageSetIndex: 0 here (template.js:5487) and pageIndex at
+	// the page area it chose. The page index is right; the page SET index is
+	// not, and it says a nested page set has been offered when nothing has.
+	// The sheet in hand came from a page area of this set, so none of its
+	// nested sets has been reached, and -1 is where "none of them" is written
+	// everywhere else in this machine.
+	//
+	// pdfium settles it. Once a page area is spent it looks at the siblings
+	// AFTER it inside its own page set — FindPageAreaFromPageSet(parent,
+	// cur_page_area_, ...) in GetNextAvailPageArea
+	// (cxfa_viewlayoutprocessor.cpp:1444-1447) — and
+	// FindPageAreaFromPageSet_Ordered walks those siblings in document order,
+	// descending into a nested page set as it meets one (:1249-1258). So the
+	// first nested set is offered before the enclosing set starts over, and
+	// with pageSetIndex at 0 it would be skipped until after a restart.
+	//
+	// It changed no answer while a restart did not clean the page areas below
+	// it, because the restart offered the nested set on its second pass. It
+	// does now. No form of the corpus nests a page set — 560 forms, 560 page
+	// sets — so this is measured by [TestTheSequenceDescendsIntoANestedPageSet]
+	// and by nothing else.
+	st := &setState{numberOfUse: 1, pageSetIndex: -1}
 	for i, a := range kidsOfKind(set, "pageArea") {
 		if a == area {
 			st.pageIndex = i
@@ -215,10 +237,14 @@ func (p *pager) afterSet(set *FormNode) *FormNode {
 		return nil
 	}
 	// Everything below has been offered and refused. What is left is to start
-	// the page set again — which is the ONE thing that can come back here on
-	// state no different from the state it left, and so the one thing that has
-	// to be done at most once. See the note on [pager]: pdf.js does it without
-	// a guard and exhausts its stack on seven forms of the corpus.
+	// the page set again — and a page set that starts again offers its page
+	// areas again, which is why cleaning them is part of the restart and not
+	// of some later branch. See [pager.cleanKids].
+	//
+	// The guard stays. It is the one thing that can come back here on state no
+	// different from the state it left — a page set holding only empty nested
+	// sets restarts, offers them, and is asked again — so it is done at most
+	// once for one request. See the note on [pager].
 	if p.restarted[set] {
 		return nil
 	}
@@ -226,26 +252,76 @@ func (p *pager) afterSet(set *FormNode) *FormNode {
 	if p.setUsable(set) {
 		st.numberOfUse++
 		st.pageIndex, st.pageSetIndex = -1, -1
+		p.cleanKids(set)
 		return p.afterSet(set)
 	}
 	if parent := p.within[set]; parent != nil {
 		return p.afterSet(parent)
 	}
-	p.clean(set)
-	return p.afterSet(set)
+	// A page set whose own <occur> is spent, with no page set above it to ask,
+	// is the end of the form. pdf.js's answer here is its second infinite
+	// loop: it cleans the page areas below and calls itself
+	// (template.js:4230-4231), but $cleanPage leaves the set's own [$extra]
+	// alone, so pageIndex is still at the end of the list and $isUsable is
+	// still false, and the call arrives back at this line unchanged.
+	//
+	// pdfium answers it. GetNextAvailPageArea walks up from the current page
+	// area's page set and stops at the root — if (pPageSet == page_set_node_)
+	// break — and returns nullptr (cxfa_viewlayoutprocessor.cpp:1450-1470),
+	// with FindPageAreaFromPageSet_Ordered having already refused the set on
+	// iMax <= iPageSetCount (:1196-1215). So a spent page set really is the
+	// end, and this is the one branch that still says [noNextPage].
+	//
+	// It is the branch that keeps the SET's <occur> meaning something: were it
+	// to start the set over regardless, no page set could ever be bounded. One
+	// page set of the corpus writes an <occur> at all, and it writes no max.
+	return nil
 }
 
-// clean forgets how much of a page set has been used, so that the sequence
-// begins again. It is pdf.js's $cleanPage (template.js:4160-4167) with the
-// page set's own state reset as well as its children's.
-func (p *pager) clean(set *FormNode) {
-	delete(p.sets, set)
+// cleanKids forgets how many times each page area BELOW a page set has been
+// used, leaving the page sets' own counts alone. It is exactly pdf.js's
+// $cleanPage (template.js:4160-4167): PageSet[$cleanPage] recurses into its
+// page areas and its nested page sets, PageArea[$cleanPage] deletes that page
+// area's [$extra] (:4058-4060), and no page set deletes its own — which is
+// what makes a set's <occur> a bound on the whole run while a page area's is
+// not.
+//
+// # This is what a page area's <occur max> bounds, and it is not the form
+//
+// A page area's max caps how many sheets it makes IN ONE RUN of the page set
+// holding it. Starting the set again starts them again. pdfium says so
+// outright: FindPageAreaFromPageSet_Ordered walks the set from its first child
+// and assigns cur_page_count_ = 1 on the page area it settles on
+// (cxfa_viewlayoutprocessor.cpp:1240-1244) — the count GetNextAvailPageArea
+// tests the max against (:1414-1425) — while the guard on repeating the whole
+// set reads the SET's own max against page_set_map_ (:1196-1215), which
+// nothing resets. So an uncapped page set holding capped page areas yields
+// sheets for ever, and a capped one stops.
+//
+// pdf.js means the same thing and cannot reach it. Its $cleanPage is in the
+// LAST branch of PageSet[$getNextPage] (template.js:4230-4231), below the
+// branch that restarts a usable set (:4222-4227) — and a set with no <occur>
+// is usable for ever ($isUsable, :4169-4174, whose first clause is !this.occur).
+// So the restart fires, offers a page area whose own max is spent, is handed
+// back the same question, and recurses until the stack is gone. That is not a
+// corner: 559 of the 560 forms in the corpus write a page set with no <occur>
+// at all.
+//
+// It is the recursion this package guarded in slice 3 rather than answered,
+// and the guard was the right shape and the wrong result: it terminated by
+// saying the form had run out of pages. Seven forms — ca-cra__rc1-fill-11-25e,
+// ca-cra__t2042-fill-24e, ca-cra__t2042-fill-25e, us-ssa__ha-4631,
+// us-ssa__ssa-372, us-ssa__ssa-5062 and us-ssa__ssa-766 — are the ones pdf.js
+// dies on, and every one of them is a page set with no <occur> over page areas
+// that write max="1". They terminate here because the restart now offers a
+// page area that can be used, not because a counter stopped it.
+func (p *pager) cleanKids(set *FormNode) {
 	for _, k := range set.Kids {
 		switch k.Kind {
 		case "pageArea":
 			delete(p.used, k)
 		case "pageSet":
-			p.clean(k)
+			p.cleanKids(k)
 		}
 	}
 }
@@ -303,24 +379,41 @@ func (p *pager) setUsable(s *FormNode) bool {
 	return !has || max == -1 || p.state(s).numberOfUse < max
 }
 
-// occurMax reads how many times a page area or a page set may be used.
+// occurMax reads how many times a page area or a page set may be used, and
+// whether anything bounds it at all.
 //
-// pdf.js resolves the defaults in Occur[$clean] (template.js:3918-3934), and
-// they are not the ones a field's <occur> takes: under a page area or a page
-// set min defaults to nought and max to unbounded, and a written min with no
-// max pins max to it.
+// An <occur> that writes no max bounds nothing, and a written min does not
+// stand in for one. That is not what Occur[$clean] reads like — it says a
+// written min with no max pins the max to the min (template.js:3925-3932) —
+// but that branch cannot fire on an attribute nobody wrote. The constructor
+// tests attributes.max !== "" (:3896-3903), and a MISSING attribute is
+// undefined rather than the empty string: _mkAttributes builds the object from
+// the attributes the parser actually saw (parser.js:79-111). So getInteger's
+// default of -1 is taken in the constructor, $clean's this.max === "" is
+// already false, and only an attribute written as max="" ever reaches the
+// branch. No page area or page set of the corpus writes one.
+//
+// It is not read this way because pdf.js arrives there by an accident of its
+// own. pdfium asks the same question with the default suppressed —
+// TryInteger(XFA_Attribute::Max, /*bUseDefault=*/false), in
+// GetNextAvailPageArea (cxfa_viewlayoutprocessor.cpp:1414-1423) and in
+// FindPageAreaFromPageSet_Ordered (:1202-1215) — and takes -1 where the
+// attribute is absent. The two references agree on the number, by different
+// routes, which is why it is the number rather than one reference's quirk.
+//
+// It decides one form outright. us-ssa__ssa-3371-bk writes <occur min="1"/> on
+// its only page area; read as a max of one it gives a single sheet, and
+// pdf.js's own dump for it is NINE.
 func occurMax(n *FormNode) (int, bool) {
 	o := n.Template.Child("occur")
 	if o == nil {
 		return 0, false
 	}
-	if s := o.Get("max"); s != "" {
-		return wholeOr(s, -1), true
+	s := o.Get("max")
+	if s == "" {
+		return 0, false
 	}
-	if s := o.Get("min"); s != "" {
-		return wholeOr(s, 0), true
-	}
-	return -1, true
+	return wholeOr(s, -1), true
 }
 
 // ordered says a page set runs its pages one after another, which is the

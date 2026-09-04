@@ -248,16 +248,16 @@ func TestABreakToAContentAreaStaysOnTheSheet(t *testing.T) {
 func TestAStackWithNoSheetLeftReportsWhatIsLeftOver(t *testing.T) {
 	// The one page area may make one sheet, and the third brick does not fit
 	// on it.
-	l := laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
-		`<contentArea w="500pt" h="25pt"/></pageArea>`, bricks(3, "10")))
+	l := laidOut(t, sheets(`><occur max="1"/><pageArea name="P"><occur max="1"/>`+
+		`<medium long="1000pt" short="1000pt"/><contentArea w="500pt" h="25pt"/></pageArea>`, bricks(3, "10")))
 	same(t, "the sheets", byPage(l), []string{"0: draw f.A0 0,0 1x10", "0: draw f.A1 0,10 1x10"})
 	same(t, "what was left off", notLaid(l), []string{"f.A2: " + noNextPage})
 }
 
 func TestABreakWithNowhereToGoStopsRatherThanPretending(t *testing.T) {
 	// The page area may make one sheet and the break asks for another.
-	l := laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
-		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	l := laidOut(t, sheets(`><occur max="1"/><pageArea name="P"><occur max="1"/>`+
+		`<medium long="1000pt" short="1000pt"/><contentArea w="500pt" h="100pt"/></pageArea>`, `
 	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
 	  <subform name="S" layout="tb"><breakBefore targetType="pageArea" startNew="1"/>
 	    <draw name="B" w="1pt" h="5pt"/></subform>
@@ -267,16 +267,16 @@ func TestABreakWithNowhereToGoStopsRatherThanPretending(t *testing.T) {
 
 	// The same for a break AFTER a child, and for one on the outermost subform
 	// itself, where there is nothing to lay out at all.
-	l = laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
-		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	l = laidOut(t, sheets(`><occur max="1"/><pageArea name="P"><occur max="1"/>`+
+		`<medium long="1000pt" short="1000pt"/><contentArea w="500pt" h="100pt"/></pageArea>`, `
 	  <subform name="S" layout="tb"><breakAfter targetType="pageArea" startNew="1"/>
 	    <draw name="A" w="1pt" h="5pt"/></subform>
 	  <draw name="B" w="1pt" h="5pt"/>`))
 	same(t, "what was left off after a breakAfter", notLaid(l), []string{"f.B: " + noNextPage})
 
 	// And for the deprecated <break after=...>, which is read as a breakAfter.
-	l = laidOut(t, sheets(`><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
-		`<contentArea w="500pt" h="100pt"/></pageArea>`, `
+	l = laidOut(t, sheets(`><occur max="1"/><pageArea name="P"><occur max="1"/>`+
+		`<medium long="1000pt" short="1000pt"/><contentArea w="500pt" h="100pt"/></pageArea>`, `
 	  <subform name="S" layout="tb"><break after="pageArea" startNew="1"/>
 	    <draw name="A" w="1pt" h="5pt"/></subform>
 	  <draw name="B" w="1pt" h="5pt"/>`))
@@ -396,7 +396,7 @@ func TestABreakBeforeTheWholeFormWithNowhereToGoLeavesNothingBehind(t *testing.T
 	// silently dropped either.
 	l := laidOut(t, `<template><subform name="f" layout="tb">
 	  <breakBefore targetType="pageArea" startNew="1"/>
-	  <pageSet><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
+	  <pageSet><occur max="1"/><pageArea name="P"><occur max="1"/><medium long="1000pt" short="1000pt"/>
 	    <contentArea w="500pt" h="100pt"/></pageArea></pageSet>
 	  <draw name="A" w="1pt" h="5pt"/><draw name="B" w="1pt" h="5pt"/></subform></template>`)
 	same(t, "the sheets", byPage(l), nil)
