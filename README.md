@@ -202,12 +202,13 @@ state it left.
 thing — a page set whose `<occur>` still allows another run resets its own
 indices and calls itself, and comes back to the same place when every page area
 below it has spent its own `<occur>`. A faithful port has to guard *every* way
-a page set can start itself again, not the one named after cleaning. So here a
-page set may restart at most once per request for a page, cleaning really does
-reset the set's own place in its list, and a page set holding neither a page
-area nor a page set says so rather than looping. Both branches were found by
-porting the machine and running it over the corpus, not by reading it: the
-second one was a stack overflow in this package's own tests.
+a page set can start itself again, not the one named after cleaning. Both
+branches were found by porting the machine and running it over the corpus, not
+by reading it: the second one was a stack overflow in this package's own tests.
+
+**Guarding a recursion is not the same as answering it**, and the guard alone
+was the wrong answer — see [Getting more sheets](#getting-more-sheets-when-a-page-set-runs-out)
+below, which is what the restart was for.
 
 Measured over the same 560 packages:
 
@@ -539,3 +540,119 @@ length, or it is there and unreadable. XFA's "unspecified" and its "zero" are
 different things — a field with no width has no width until its text is
 measured, which is not the same as a field nought wide — and pdf.js loses the
 distinction in `measureToString`, which turns any string into `"0px"`.
+
+## Getting more sheets when a page set runs out
+
+`<occur>` on a page area does not bound a form, and reading it as if it did left
+**1 887 fields on 10 forms** off the paper.
+
+### A page area's max is a bound on ONE RUN of the set holding it
+
+Restarting a page set offers its page areas again. Both references say so and
+neither quite carries it out.
+
+**pdfium** says it in a line: `FindPageAreaFromPageSet_Ordered` walks a set from
+its first child and sets `cur_page_count_ = 1` on the page area it settles on
+(`cxfa_viewlayoutprocessor.cpp:1240-1244`) — and `cur_page_count_` is the
+counter `GetNextAvailPageArea` tests the max against (`:1414-1425`). What bounds
+the whole run is the **set's** own max, read against `page_set_map_`
+(`:1196-1215`), which nothing resets. So an uncapped page set over capped page
+areas yields sheets for ever, and a capped one stops.
+
+**pdf.js** means the same and cannot reach it. Its `$cleanPage`
+(`template.js:4160-4167`) is exactly that reset, but it sits in the LAST branch
+of `PageSet[$getNextPage]` (`:4230-4231`), below the branch that restarts a
+usable set (`:4222-4227`) — and a set with no `<occur>` is usable for ever
+(`$isUsable`, `:4169-4174`, whose first clause is `!this.occur`). **559 of the
+560 corpus forms write a page set with no `<occur>` at all.** So the restart
+fires, hands back a page area whose own max is spent, and recurses until the
+stack is gone. That is the seven-form crash above, and it is this branch.
+
+Cleaning the page areas on the restart is the whole change. The sequence then
+terminates because it has a page to give, not because a counter stopped it.
+
+### An absent `max` is unbounded, whatever the `min` says
+
+The second half is one line of `occurMax`. `Occur[$clean]` reads as though a
+written `min` with no `max` pins the max to the min (`template.js:3925-3932`) —
+but that branch cannot fire on an attribute nobody wrote. The constructor tests
+`attributes.max !== ""` (`:3896-3903`), and a **missing** attribute is
+`undefined` rather than `""` (`_mkAttributes`, `parser.js:79-111`), so
+`getInteger`'s default of `-1` is taken and `$clean`'s `this.max === ""` is
+already false. Only `max=""` written out reaches it, and nothing in the corpus
+writes one.
+
+That is pdf.js arriving somewhere by accident, so it is not read from pdf.js.
+pdfium asks the same question with the default suppressed —
+`TryInteger(XFA_Attribute::Max, /*bUseDefault=*/false)` — and takes `-1` where
+the attribute is absent. **The two agree on the number by different routes.**
+
+It decides one form outright: `us-ssa__ssa-3371-bk` writes `<occur min="1"/>`
+on its only page area. Read as a max of one it gives a single sheet and 127
+fields fall off; pdf.js's own dump for it is **nine** sheets, and this package
+now puts it on nine.
+
+### What it is worth
+
+| | slice 7 | slice 8 |
+|---|---:|---:|
+| **placed** | **79 851** | **81 738** |
+| past the last sheet the page set gives | 1 887 | **0** |
+| anchored by a corner, with no size of its own | 9 | 9 |
+| no room inside a container that moves in one piece | 3 | 3 |
+| sheets | 3 040 | 3 088 |
+
+Reconciled field by field against `main`, 81 750 dispositions paired on
+`(form, path, occurrence)` with the same multiset of keys: **1 887 placed, 0
+lost, and 0 fields placed both times on a different sheet.**
+
+### Where the reference could see it, and where it could not
+
+Of the 1 887, **1 760 are on forms pdf.js cannot lay out at all** — the seven it
+recurses to death on, plus `ca-cra__t2121-fill-24e` and `-25e`, which have the
+same page set and die of its font defect first. The remaining **127** are
+`us-ssa__ssa-3371-bk`, which pdf.js does lay out, and which is therefore the
+only external check this change has. It is a good one: the form goes from one
+sheet to nine, its 190 body boxes all pair, and **every one lands on the sheet
+pdf.js put it on**.
+
+| which sheet they went on | slice 7 | slice 8 |
+|---|---:|---:|
+| forms where this package placed **every** element | 476 | **477** |
+| of those, agreeing with pdf.js on the number of sheets | 472 | **473** |
+| boxes paired on those forms | 150 792 | **150 982** |
+| **on the same sheet as pdf.js** | 100.00% | **100.00%** |
+| forms placing fewer elements and using **MORE** sheets | 2 | 2 |
+
+Container heights: **7 794 of 7 794 agree to 1/100 pt**, none unmeasurable.
+Placement: **176 of 176** exact, and **0** of the 163 382 flexbox boxes above or
+left of their container.
+
+**The pairing re-audited, because more sheets means more boxes.** Of 162 353
+body boxes on the 473 agreeing forms: 150 982 paired, 6 781 unnamed and so never
+keyed, 4 590 keyed but absent from pdf.js's dump (1 900 `presence="hidden"`),
+and **0 dropped because the two sides counted a key differently**. The same
+audit on `main` gives 6 781, 4 590 and 1 900 — *identical* — so the newly
+comparable form contributed 190 boxes and every one of them paired.
+
+### One correction that came with it
+
+pdf.js starts a form with `pageSetIndex: 0` (`template.js:5487`) on the page set
+the first sheet came from, which says a nested page set has been offered when
+none has. It changed no answer while the restart did not clean, because the
+restart offered the nested set on its second pass. It does now, so it is `-1`
+here. pdfium looks at the siblings *after* the spent page area, descending into
+a nested set as it meets one (`cxfa_viewlayoutprocessor.cpp:1444-1447`,
+`:1249-1258`). **No corpus form nests a page set** — 560 forms, 560 page sets —
+so this is measured by one unit test and by nothing else.
+
+### What it does not settle
+
+The four sheet-count disagreements are the same four, and none is this. Neither
+`us-opm__sf813` nor `us-opm__sf39a` (the positioned fit check,
+`layout.js:355-364`) nor `us-uscis__i-600a` nor `us-uscis__i-821` (one sheet
+behind after a `breakBefore`) writes an `<occur>` on any page area, so neither
+half of this change can touch them — checked before assuming it. The two forms
+using more sheets than the reference, `us-uscis__i-956` and `i-956g`, are
+likewise unchanged.
+
