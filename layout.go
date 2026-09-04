@@ -187,6 +187,10 @@ var flowLayouts = map[string]bool{
 //     would move one too tall for what is left onto the next line
 //     (layout.js:284-290); the room left is not a quantity the measurement
 //     carries. See [placer.pack].
+//   - A container anchored along its middle or its right edge that writes no
+//     width. The height such a container is measured against is computed —
+//     see [placer.place] — but the width is a different quantity and no
+//     container of the corpus asks for it.
 //   - Borders. A child's origin is the inside of its parent's margin, not the
 //     inside of its parent's border.
 //
@@ -460,22 +464,47 @@ func (p *placer) place(n *FormNode, f frame) {
 	// (html_utils.js:44-79, 125-133), and a transform moves everything inside
 	// it, so its children are measured from where it ends up rather than from
 	// where its x and y say.
-	if anchored(n.Template) || rotateOf(n.Template) != 0 {
+	if rotateOf(n.Template) != 0 {
+		// Asked before the size is, because a turned container's size is read
+		// along axes this does not follow either, and saying it is turned is
+		// the true reason where both are so.
+		p.rejectAll(n, "its contents are turned, which this slice does not follow")
+		return
+	}
+	if anchored(n.Template) {
 		w, okW, _ := n.Template.Measure("w")
 		h, okH, _ := n.Template.Measure("h")
-		if !okW || !okH {
-			// Its own size is what the anchor is measured against, and a
-			// container's size is usually its contents'. That is the
-			// measurement this slice does not do.
-			p.rejectAll(n, "it is anchored by a corner other than its top left, "+
-				"and its size is not written: only measuring its contents would give it")
+		if !okH {
+			// A container that writes no height is as tall as what it holds.
+			// pdfium sizes a positioned container from its contents outright —
+			// DoLayoutPositionedContainer keeps the largest of
+			// absolutePos.y + size.height over its children and hands that to
+			// CalculateContainerComponentSizeFromContentSize, which adds the
+			// container's own topInset and bottomInset
+			// (cxfa_contentlayoutprocessor.cpp:1192-1204, 543-560) — and
+			// CalculatePositionedContainerPos then takes the anchor off it
+			// (:588-650). [placer.heightOf] is that same number: its positioned
+			// arm is max(y + h) over the children and [placer.measure] adds the
+			// margin. So the height an anchor is measured against is one this
+			// package already computes; it was only never asked for here.
+			var why string
+			if h, why = p.heightOf(n, f.wide, f.colW); why != "" {
+				p.rejectAll(n, why)
+				return
+			}
+		}
+		if !okW && anchorNeedsWidth(n.Template) {
+			// Only an anchor along the middle or the right of the box moves it
+			// by its width, and no container of the corpus is one. Measuring a
+			// container's width is a different question from measuring its
+			// height — pdfium's fContentCalculatedWidth is max(x + w) with the
+			// same shape, but nothing here computes it and nothing asks for it,
+			// so it is named rather than guessed at.
+			p.rejectAll(n, "it is anchored along its middle or its right edge, "+
+				"and its width is not written: only measuring its contents would give it")
 			return
 		}
-		r, rotate := transformedBBox(n.Template, f.x, f.y, w, h)
-		if rotate != 0 {
-			p.rejectAll(n, "its contents are turned, which this slice does not follow")
-			return
-		}
+		r, _ := transformedBBox(n.Template, f.x, f.y, w, h)
 		f.x, f.y = r.X, r.Y
 	}
 	p.children(n, f)
@@ -931,6 +960,20 @@ func transformedBBox(n *Node, x, y, w, h Measure) (Rect, int) {
 		W: abs(w),
 		H: abs(h),
 	}, rotate
+}
+
+// anchorNeedsWidth says the element's anchorType moves its box by its own
+// width. Only those need a width the template may not have written;
+// [transformedBBox] reads w for the rest but multiplies it by nothing that
+// reaches the origin a container's children are measured from. A turned
+// container is not asked — [placer.place] has already refused it.
+func anchorNeedsWidth(n *Node) bool {
+	switch n.Get("anchorType") {
+	case "bottomCenter", "bottomRight", "middleCenter", "middleRight", "topCenter", "topRight":
+		return true
+	default:
+		return false
+	}
 }
 
 // anchored says an element names a corner other than its top left for its x

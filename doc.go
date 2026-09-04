@@ -130,9 +130,8 @@
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	81 738 placed, 151 305 draws with them, on 3 088 sheets
-//	     9 are anchored by a corner, with no size of their own
-//	     3 have no room inside a container that moves in one piece
+//	81 734 placed, 156 010 draws with them, on 3 090 sheets
+//	    16 sit under a page area no sheet of the form ever is
 //
 // # What checks it
 //

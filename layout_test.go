@@ -197,11 +197,15 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <draw name="A" w="1pt" maxH="9pt"/></subform></template>`,
 			[]string{"f.A: " + boundByTheRoom("maxH")}},
-		{"a container anchored by a corner, with no size of its own",
+		{"a container anchored along its middle, with no width of its own",
 			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
-			  <subform name="S" anchorType="bottomLeft"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
-			[]string{"f.S.A: it is anchored by a corner other than its top left, and its size is not written: " +
+			  <subform name="S" anchorType="middleCenter"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
+			[]string{"f.S.A: it is anchored along its middle or its right edge, and its width is not written: " +
 				"only measuring its contents would give it"}},
+		{"a container anchored by a corner, holding something nobody can measure",
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			  <subform name="S" anchorType="bottomLeft"><draw name="A" w="1pt" maxH="9pt"/></subform></subform></template>`,
+			[]string{"f.S.A: " + boundByTheRoom("maxH")}},
 		{"a container turned on its side",
 			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" rotate="90" w="9pt" h="9pt"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
@@ -429,4 +433,22 @@ func TestAPositionedChildBeginsInsideTheInsets(t *testing.T) {
 		"field f.S.A 131.6,223.6 5x5",
 		"field f.S.In.B 113.6,223.6 5x5",
 	})
+}
+
+func TestAContainerAnchoredByACornerIsAsTallAsWhatItHolds(t *testing.T) {
+	// pdfium sizes a positioned container from its contents and then takes the
+	// anchor off that: DoLayoutPositionedContainer keeps the largest
+	// absolutePos.y + size.height over the children
+	// (cxfa_contentlayoutprocessor.cpp:1192-1204) and
+	// CalculatePositionedContainerPos subtracts the whole height for a bottom
+	// anchor (:588-650).
+	//
+	// Here the children reach 20 + 30 = 50, so a box whose BOTTOM is written
+	// at 60 begins at 10, and its two children at 10 and 30.
+	l := laidOut(t, `<template><subform name="f" layout="position">
+	  <pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+	  <subform name="S" anchorType="bottomLeft" y="60pt">
+	    <draw name="A" w="1pt" h="10pt"/>
+	    <draw name="B" w="1pt" h="30pt" y="20pt"/></subform></subform></template>`)
+	same(t, "the boxes", byPage(l), []string{"0: draw f.S.A 0,10 1x10", "0: draw f.S.B 0,30 1x30"})
 }

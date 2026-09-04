@@ -362,6 +362,30 @@ func fits(reach, bottom Measure) bool {
 // table row repeated eleven times breaks eleven times, not once. The mark here
 // is on the occurrence for the same reason.
 func (p *placer) fires(n *FormNode, after bool) bool {
+	if hidden(n.Template) {
+		// A break carried by a container the template hides does not fire.
+		// pdfium gates the whole of it on presence: ProcessBreakBeforeOrAfter
+		// returns nullopt when the break's container does not require space
+		// (cxfa_viewlayoutprocessor.cpp:922-928), and the forced page end that
+		// would otherwise catch an overflowing child is gated the same way
+		// (cxfa_contentlayoutprocessor.cpp:1922-1927). PresenceRequiresSpace
+		// is true only for "visible" and "invisible" (cxfa_node.cpp:5348-5353),
+		// which is the same pair [hidden] excludes.
+		//
+		// It is the other half of a rule this package already keeps: a hidden
+		// container is given no room by the flow above it (see [hidden]), and
+		// a container that takes no room has no reason to turn the page.
+		//
+		// The corpus has one instance, and it is a control rather than a
+		// theory: us-irs__f4797 writes three page-sized subforms under a tb
+		// root, the third presence="hidden" with
+		// <breakBefore targetType="pageArea" startNew="1"/>. pdfium lays that
+		// form out on 2 sheets and puts the hidden subform's six leaves at
+		// y=792 on the second, off an 11-inch sheet; this package made a third
+		// sheet for them. pdf.js is no help — it cannot lay the form out at
+		// all.
+		return false
+	}
 	key := breakKey{n, after}
 	if p.fired[key] {
 		return false
