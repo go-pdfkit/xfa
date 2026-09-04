@@ -306,6 +306,12 @@ func TestTheSlopAStackIsAllowed(t *testing.T) {
 	// heights written in millimetres and added up in points comes out a
 	// fraction over a page it was drawn to fill. One child, on a page twenty
 	// points tall.
+	//
+	// Z is a draw of no height at all, and it is there to claim the sheet's
+	// one free pass: the FIRST thing on a sheet that moves in one piece is not
+	// measured against anything (layout.js:266-268), so without it every
+	// height here would be allowed and the slop would not be under test. It
+	// takes no room, so the twenty points are still A's.
 	for _, tc := range []struct {
 		h      string
 		placed int
@@ -316,8 +322,9 @@ func TestTheSlopAStackIsAllowed(t *testing.T) {
 		{"22.6pt", 0}, // rounds to three, which is past it
 		{"30pt", 0},
 	} {
-		l := laidOut(t, page(`w="500pt" h="20pt"`, `<draw name="A" w="1pt" h="`+tc.h+`"/>`))
-		if n := len(l.Pages[0].Boxes); n != tc.placed {
+		l := laidOut(t, page(`w="500pt" h="20pt"`,
+			`<draw name="Z" w="1pt" h="0pt"/><draw name="A" w="1pt" h="`+tc.h+`"/>`))
+		if n := len(l.Pages[0].Boxes) - 1; n != tc.placed {
 			t.Errorf("a child %s tall on a 20pt page came out %d placed, want %d", tc.h, n, tc.placed)
 		}
 	}

@@ -350,6 +350,17 @@ type placer struct {
 	// current content area the flow has got.
 	chain []*level
 	y     Measure
+	// free says nothing that has to move in one piece has been laid out on the
+	// sheet in hand yet, so the next thing that does cannot fail to fit. It is
+	// pdf.js's firstUnsplittable being null (layout.js:266-268), cleared once
+	// per sheet (template.js:5536-5538). See [placer.whole].
+	free bool
+	// noFail says the flow is inside that first container, whose whole subtree
+	// pdf.js also refuses to fail: noLayoutFailure is switched on before its
+	// own check and off again only on the way out of it
+	// (template.js:313-326, 5075-5178), and every checkDimensions branch reads
+	// it (layout.js:286, 319, 339, 361, 373).
+	noFail bool
 	// blocked is why the flow stopped, once it has: a height no arithmetic
 	// gives leaves everything below it in every open container with nowhere to
 	// begin.
@@ -510,8 +521,11 @@ func (p *placer) stack(n *FormNode, kids []*FormNode, lay string, f frame, wide 
 			return
 		}
 		// pdf.js rounds before comparing and allows two points of slop
-		// (layout.js:275, 349). See [fitSlop].
-		if !fits(off+h, room) {
+		// (layout.js:275, 349). See [fitSlop]. Inside the first container of
+		// the sheet that moves in one piece there is no comparison at all:
+		// noLayoutFailure is on for the whole of its subtree, and every branch
+		// of checkDimensions returns true while it is. See [placer.noFail].
+		if !p.noFail && !fits(off+h, room) {
 			// A container this deep is one that moves in one piece, so what
 			// does not fit in it cannot be carried onto another page: it would
 			// leave the rest of the container behind.

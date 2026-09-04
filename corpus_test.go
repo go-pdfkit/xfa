@@ -384,7 +384,7 @@ func TestPlacementOverTheCorpus(t *testing.T) {
 			case u.Kind == "field":
 				uf++
 				why[u.Why]++
-				if u.Why == tooTallForAPage || u.Why == noNextPage || u.Why == noRoomInside {
+				if u.Why == noNextPage || u.Why == noRoomInside {
 					pastTheBottom++
 				}
 			default:
