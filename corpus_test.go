@@ -810,7 +810,7 @@ func TestFlowHeightsAgainstPdfjs(t *testing.T) {
 			}
 		}
 		mine := map[string][]containerHeight{}
-		p := &placer{heights: map[heightKey]height{}, up: map[*FormNode]*FormNode{}}
+		p := newPlacer()
 		p.mapUp(fm.Root)
 		collect(p, fm.Root, bodyWide(fm), containerHeight{}, mine)
 		for k, ms := range mine {

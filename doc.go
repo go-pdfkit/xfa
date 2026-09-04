@@ -114,9 +114,9 @@
 // area comes out one per sheet, hanging over the bottom, which is what pdf.js
 // draws.
 //
-// Everything it does not reach — lr-tb and the two layouts that fill from the
-// right, a form that runs out of pages, an element with no room inside a
-// container that moves whole — comes back in [Layout.Unplaced] with the reason
+// Everything it does not reach — rl-row, which fills a row from the right, a
+// form that runs out of pages, an element with no room inside a container that
+// moves whole — comes back in [Layout.Unplaced] with the reason
 // written out, one element at a time. Nothing of the body is dropped. A page
 // area's own furniture is drawn once on every sheet that page area makes,
 // which is the one thing not in one-to-one correspondence with the boxes on
@@ -125,11 +125,10 @@
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	75 490 placed, 140 585 draws with them, on 2 864 sheets
-//	 4 303 sit under lr-tb, which wraps its children onto lines
+//	79 851 placed, 148 188 draws with them, on 3 040 sheets
 //	 1 887 are past the last sheet the page set gives
-//	    61 have no room inside a container that moves in one piece
 //	     9 are anchored by a corner, with no size of their own
+//	     3 have no room inside a container that moves in one piece
 //
 // # What checks it
 //
