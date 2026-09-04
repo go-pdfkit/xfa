@@ -67,15 +67,18 @@ type level struct {
 //     (xfa_object.js:214-216), and the one that matters is <area>: it holds
 //     body content, it is not a subform, and $getSubformParent does not skip
 //     it (template.js:4901-4907), so nothing inside an area is ever split.
+//
 //  2. Its own layout is neither "position" nor anything containing "row".
 //     Stated the other way round here — only tb and table — because those are
 //     the two this package stacks. pdf.js would also split lr-tb and rl-tb,
 //     whose height this package does not compute at all.
+//
 //  3. Its <keep intact> is "none": an author's instruction not to let this
 //     land half on one sheet and half on the next. 1 355 elements of the
 //     corpus carry one. An exclGroup has the same predicate WITHOUT this
 //     clause (template.js:2405-2429) — read there rather than assumed — and
 //     that difference is kept.
+//
 //  4. If the container above it has a layout ending in "-tb" and has already
 //     put something on the line in hand, it is not splittable. pdf.js gives
 //     the reason in full (template.js:4962-4970):
