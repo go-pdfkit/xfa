@@ -230,6 +230,27 @@ func (p *placer) measure(n *FormNode, wide, colW Measure) (Measure, string) {
 // a TABLE that writes no width takes the sum of its own columnWidths for one
 // (:352-356). Both are pdf.js's, and both happen before the space is computed.
 func innerWide(n *FormNode, wide, colW Measure, lay string, in insets) Measure {
+	switch space := spaceWide(n, wide, colW, lay); lay {
+	case "tb", "table", "lr-tb", "rl-tb":
+		return space - in.horizontal()
+	default:
+		return space
+	}
+}
+
+// spaceWide is the container's own share of the room across the page, before
+// its margin is taken off it: pdf.js's
+// [$extra].availableSpace.width = Math.min(this.w || Infinity,
+// availableSpace.width) (template.js:5065).
+//
+// It is kept apart from [innerWide] because the two are used at different
+// moments and mean different things. innerWide is what the children are
+// measured against — getAvailableSpace, which subtracts the margin
+// (layout.js:180-195). This one is the ceiling a tb or a table holds its OWN
+// width down to (MathClamp's third argument, layout.js:147, 154), and pdf.js
+// reads it from [$extra].availableSpace, where the margin has not been taken
+// off.
+func spaceWide(n *FormNode, wide, colW Measure, lay string) Measure {
 	own, ok, err := n.Template.Measure("w")
 	if err != nil {
 		return noWidth
@@ -247,10 +268,6 @@ func innerWide(n *FormNode, wide, colW Measure, lay string, in insets) Measure {
 	}
 	if ok && own != 0 {
 		wide = min(wide, own)
-	}
-	switch lay {
-	case "tb", "table", "lr-tb", "rl-tb":
-		return wide - in.horizontal()
 	}
 	return wide
 }
@@ -296,7 +313,14 @@ func (p *placer) contentHeight(n *FormNode, wide Measure) (Measure, string) {
 		}
 		return tallest, ""
 	case "lr-tb", "rl-tb":
-		return 0, fmt.Sprintf("a %s layout wraps its children onto lines, and how many lines they come to is not computed here", lay)
+		// pdf.js accumulates the height as it packs the lines, and the two
+		// branches of addHTML differ in how (layout.js:118-126), so there is
+		// no summing it apart from the packing. See [placer.pack].
+		f, why := p.linesOf(n, wide)
+		if why != "" {
+			return 0, why
+		}
+		return f.h, ""
 	default:
 		// Positioned: each child is where it says it is, and the container
 		// reaches as far as the furthest of them.

@@ -202,6 +202,8 @@ func Place(form *Form) *Layout {
 	p := &placer{
 		layout:  l,
 		heights: map[heightKey]height{},
+		widths:  map[heightKey]width{},
+		packs:   map[heightKey]packing{},
 		up:      map[*FormNode]*FormNode{},
 		root:    root,
 		pager:   newPager(root),
@@ -323,6 +325,12 @@ type placer struct {
 	// heights memoises what each node contributes to the stack above it, at
 	// the width it has where it sits. See [placer.heightOf].
 	heights map[heightKey]height
+	// widths and packs are the same thing across the page: what a node takes
+	// on the line of a container that wraps, and how one such container's
+	// children came out on its lines. Both arrive with lr-tb; see
+	// [placer.widthOf] and [placer.linesOf].
+	widths map[heightKey]width
+	packs  map[heightKey]packing
 	// up is each container's layout parent, which is where a row reads the
 	// columnWidths it cuts its cells from. It follows the same rule as
 	// [contained]: a subformSet is not a parent, its children belong to the
@@ -481,7 +489,9 @@ func (p *placer) children(n *FormNode, f frame) {
 		p.stack(n, kids, lay, f, wide, cols)
 	case "row":
 		p.cells(n, kids, f)
-	case "lr-tb", "rl-tb", "rl-row":
+	case "lr-tb", "rl-tb":
+		p.wrap(n, kids, lay, f, wide, cols)
+	case "rl-row":
 		p.firstOnly(kids, lay, f, wide, cols)
 	default:
 		for _, kid := range kids {
@@ -577,27 +587,82 @@ func (p *placer) cells(n *FormNode, kids []*FormNode, f frame) {
 
 // firstOnly places the first child of a layout this slice does not follow, and
 // says why the rest are not there.
+//
+// Only rl-row is left of the three it was written for: lr-tb and rl-tb wrap
+// onto lines now ([placer.wrap]). rl-row fills a ROW from the right, which
+// needs the row's own width — the sum of the columnWidths above it — and the
+// corpus writes no rl-row at all, so nothing measures whether it would be
+// right.
 func (p *placer) firstOnly(kids []*FormNode, lay string, f frame, wide Measure, cols []Measure) {
 	for i, kid := range kids {
 		switch {
-		case lay != "lr-tb":
-			// pdf.js gives rl-tb and rl-row CSS row-reverse
-			// (web/xfa_layer_builder.css:265-273), so even the first child
-			// begins at the container's width less its own.
-			p.rejectAll(kid, fmt.Sprintf(
-				"a %s layout fills from the right, which needs a width not computed here", lay))
 		case i > 0:
 			p.rejectAll(kid, fmt.Sprintf(
-				"a %s layout wraps its children onto lines, and where the one before it ends is not computed here", lay))
+				"a %s layout fills from the right, which needs a width not computed here", lay))
 		default:
 			// pdf.js accumulates from nought — extra.height starts at 0 and
 			// the first child is pushed before anything is added to it
-			// (layout.js:145-160) — so the first child of an lr-tb sits at the
-			// container's own origin. That is the flow algorithm's own answer
-			// for one child, not an approximation.
+			// (layout.js:145-160) — so the first child sits at the container's
+			// own origin. That is the flow algorithm's own answer for one
+			// child, not an approximation.
 			p.placeAt(kid, frame{x: f.x, y: f.y, avail: f.avail, wide: wide, cols: cols}, nil)
 		}
 	}
+}
+
+// wrap puts a wrapping container's children on the lines [placer.pack] broke
+// them onto.
+//
+// This is the container laid out in ONE piece — inside something that does not
+// flow, or inside a container this package moves whole. A wrapping container
+// of the flowing chain is [placer.flowLines], which is the same packing walked
+// a line at a time so that a page can be turned between two of them.
+//
+// There is no fit check here, and that is deliberate rather than an omission:
+// the height this container reported to whoever placed it is the height of
+// this packing, so refusing a line that runs past the bottom would put a box
+// somewhere its own container had already been measured as reaching.
+// [placer.stack] can check, because a tb's height is the sum of its children's
+// and dropping one is arithmetic the container above can still follow.
+func (p *placer) wrap(n *FormNode, kids []*FormNode, lay string, f frame, wide Measure, cols []Measure) {
+	in, ok := marginOf(n.Template)
+	if !ok {
+		p.rejectKids(kids, "the container that wraps it onto lines writes a margin that is not in lengths")
+		return
+	}
+	fl, why := p.linesOf(n, wide)
+	if why != "" {
+		p.rejectKids(kids, fmt.Sprintf(
+			"a %s layout wraps its children onto lines, and this one cannot be broken into them: %s", lay, why))
+		return
+	}
+	room := f.avail
+	if own, okH, errH := n.Template.Measure("h"); okH && errH == nil {
+		room = min(room, own)
+	}
+	room -= in.vertical()
+	x, y := f.x+in.left, f.y+in.top
+	for _, b := range fl.boxes {
+		p.placeAt(b.node, frame{
+			x: lineX(lay, x, wide, b), y: y + b.y,
+			avail: room - b.y, wide: b.wide, cols: cols,
+		}, nil)
+	}
+}
+
+// lineX is where one packed child's own box begins across the page.
+//
+// pdf.js emits no coordinate inside a line at all — createLine wraps the
+// children in a div of class xfaLr or xfaRl (layout.js:57-65) and the browser
+// lays them out with flexbox. xfaLr is flex-direction: row, so the children
+// run from the container's left edge; xfaRl is row-reverse
+// (xfa_layer_builder.css:263-273), so they run from its right. The packing is
+// the same for both — only where the line is anchored differs.
+func lineX(lay string, x, wide Measure, b lineBox) Measure {
+	if lay == "rl-tb" {
+		return x + wide - b.x - b.w
+	}
+	return x + b.x
 }
 
 // contained is a container's children as layout sees them. A subformSet is not
