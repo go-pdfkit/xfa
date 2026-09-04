@@ -246,10 +246,18 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 			`<margin topInset="1pt" rightInset="a bit"/><draw name="A" w="1pt" h="1pt"/>`,
 			[]string{"f.A: the container that stacks it writes a margin that is not in lengths"}},
 		{"a margin that is not in lengths, on something being stacked",
+			// Twice over, and for two different reasons. S is positioned, and
+			// a positioned child begins at its container's leftInset and
+			// topInset — so A cannot be placed at all when the insets cannot
+			// be read, which is the same refusal [placer.stack] has always
+			// made rather than taking an unreadable margin as nought. And S's
+			// own height is unknown for the same reason, so B, which comes
+			// after it in the stack, does not know where it begins.
 			`<subform name="S"><margin bottomInset="a bit"/><draw name="A" w="1pt" h="1pt"/></subform>
 			 <draw name="B" w="1pt" h="1pt"/>`,
-			[]string{"f.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
-				"its margin is not written in lengths"}},
+			[]string{"f.S.A: the container holding it writes a margin that is not in lengths",
+				"f.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
+					"its margin is not written in lengths"}},
 		{"an origin inside a positioned container that is not a place",
 			`<subform name="S"><draw name="A" y="down a bit" w="1pt" h="1pt"/></subform>
 			 <draw name="B" w="1pt" h="1pt"/>`,

@@ -128,7 +128,7 @@ func TestAFormPlacedByHand(t *testing.T) {
 func TestAPositionedFormNeedsNoFirstChildRule(t *testing.T) {
 	// The same body under a positioned outermost subform: now every child is
 	// placed at its own coordinates, Body's x=5 y=7 among them.
-	l := laidOut(t, strings.Replace(worked, `name="form1" layout="tb"`, `name="form1"`, 1))
+	l := laidOut(t, strings.Replace(worked, `name="form1" layout="tb"`, `name="form1" layout="position"`, 1))
 	same(t, "the page", laid(l), []string{
 		"draw form1.Page1.Stamp 10,20 30x40",
 		// Body: 18+5, 36+7 = 23,43; A: 24,45; Inner: 33,63; B: 36,67
@@ -182,7 +182,7 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			  </pageSet></subform></template>`,
 			[]string{"f.P2.Two: its page area is never used: no page of this form is one"}},
 		{"an origin that is not a place",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" x="over there"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{`f.S.A: its origin is written as x="over there" y="", which is not a place`}},
 		{"a size that is not a size",
@@ -198,12 +198,12 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			  <draw name="A" w="1pt" maxH="9pt"/></subform></template>`,
 			[]string{"f.A: " + boundByTheRoom("maxH")}},
 		{"a container anchored by a corner, with no size of its own",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" anchorType="bottomLeft"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{"f.S.A: it is anchored by a corner other than its top left, and its size is not written: " +
 				"only measuring its contents would give it"}},
 		{"a container turned on its side",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" rotate="90" w="9pt" h="9pt"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{"f.S.A: its contents are turned, which this slice does not follow"}},
 		{"a row that fills from the right",
@@ -240,7 +240,7 @@ func TestASubformSetHoldsNoPlaceOfItsOwn(t *testing.T) {
 }
 
 func TestAnExclGroupPlacesItsButtons(t *testing.T) {
-	l := laidOut(t, `<template><subform name="f">
+	l := laidOut(t, `<template><subform name="f" layout="position">
 	  <pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 	  <exclGroup name="Sex" x="10pt" y="10pt">
 	    <field name="M" x="0pt" y="0pt" w="8pt" h="8pt"/>
@@ -371,7 +371,7 @@ func TestAContainerAnchoredByACornerMovesWhatIsInside(t *testing.T) {
 	// transform moves the subtree with it. Worked by hand: the subform names
 	// its bottom left corner at 0,100 and is 50 tall, so its top left is at
 	// 0,50, and the field one point across and two down from that is at 1,52.
-	l := laidOut(t, `<template><subform name="f">
+	l := laidOut(t, `<template><subform name="f" layout="position">
 	  <pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 	  <subform name="S" anchorType="bottomLeft" y="100pt" w="100pt" h="50pt">
 	    <field name="A" x="1pt" y="2pt" w="5pt" h="5pt"/>
@@ -397,4 +397,36 @@ func TestTheShadowWalkStopsGoingDown(t *testing.T) {
 	if n != maxDepth+1 {
 		t.Errorf("it followed %d nodes down a tree %d deep, want %d", n, maxDepth+9, maxDepth+1)
 	}
+}
+
+// TestAPositionedChildBeginsInsideTheInsets is the second thing pdfium settled
+// that pdf.js could not: a container's margin moves what is positioned inside
+// it, and not only what is stacked inside it.
+//
+// pdfium adds every ancestor's margin/@leftInset and @topInset on the way down
+// to an absolute rectangle — CXFA_ContentLayoutItem::GetAbsoluteRect,
+// xfa/fxfa/layout/cxfa_contentlayoutitem.cpp:82-90 — with no test of the
+// layout, and cxfa_ffwidget.cpp:228 makes that the rectangle it draws with.
+// pdf.js hands <margin> to CSS as `margin` on the element (html_utils.js:171-174)
+// and never resolves it into a coordinate at all.
+//
+// 1.27mm is 3.6pt, which is what fr-cerfa__cerfa_12818 writes between a table
+// cell and its four buttons, and 3.6 is exactly what pdfium put them right of
+// where this package did.
+func TestAPositionedChildBeginsInsideTheInsets(t *testing.T) {
+	l := laidOut(t, `<template><subform name="f" layout="position">
+	  <pageSet><pageArea name="P"><contentArea x="10pt" y="20pt"/></pageArea></pageSet>
+	  <subform name="S" x="100pt" y="200pt">
+	    <margin leftInset="1.27mm" topInset="1.27mm" rightInset="1.27mm" bottomInset="1.27mm"/>
+	    <field name="A" x="6.35mm" y="0pt" w="5pt" h="5pt"/>
+	    <subform name="In" x="0pt" y="0pt"><field name="B" w="5pt" h="5pt"/></subform>
+	  </subform></subform></template>`)
+	// S sits at the content area's origin plus its own x and y: 110,220.
+	// A is 6.35mm = 18pt across of S's INSIDE, which begins 3.6 in from S:
+	//   110 + 3.6 + 18 = 131.6, and 220 + 3.6 + 0 = 223.6.
+	// In writes no margin of its own, so B moves by S's insets only.
+	same(t, "the page", laid(l), []string{
+		"field f.S.A 131.6,223.6 5x5",
+		"field f.S.In.B 113.6,223.6 5x5",
+	})
 }

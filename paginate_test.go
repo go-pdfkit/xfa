@@ -463,3 +463,45 @@ func TestSplittabilityIsAskedOfTheWholeChainAndNotOfOneNode(t *testing.T) {
 		}
 	}
 }
+
+// TestARootThatWritesNoLayoutFlows is the one node pdfium reads differently
+// from pdf.js, and the difference is a sheet count rather than a coordinate.
+//
+// pdf.js reads an absent layout as "position" wherever it appears, so the
+// outermost subform of these three templates would be laid out in one piece on
+// one sheet and the <break> inside it would never be reached — a positioned
+// container is never flowed. pdfium's GetLayout
+// (cxfa_contentlayoutprocessor.cpp:365-379) returns Tb instead, but only where
+// the node's parent is the <form> root, and only where the attribute does not
+// parse. See [placer.forcedTb].
+//
+// Three of the corpus's four such roots are forms this package put on one
+// sheet where pdfium and pdf.js both use two.
+func TestARootThatWritesNoLayoutFlows(t *testing.T) {
+	body := `<pageSet><pageArea name="P"><medium long="100pt" short="100pt"/>
+	    <contentArea w="100pt" h="100pt"/></pageArea></pageSet>
+	  <subform name="One"><field name="A" w="5pt" h="5pt"/></subform>
+	  <subform name="Two"><break before="pageArea" startNew="1"/>
+	    <field name="B" w="5pt" h="5pt"/></subform>`
+	for _, tc := range []struct {
+		what  string
+		root  string
+		pages int
+		want  []string
+	}{
+		{"no layout at all: pdfium's Tb, so the break fires", `<subform name="f">`, 2,
+			[]string{"field f.One.A 0,0 5x5", "field f.Two.B 0,0 5x5"}},
+		{"layout written as position: the attribute parses, so no forcing", `<subform name="f" layout="position">`, 1,
+			[]string{"field f.One.A 0,0 5x5", "field f.Two.B 0,0 5x5"}},
+		{"a layout nobody can read is an absent one", `<subform name="f" layout="sideways">`, 2,
+			[]string{"field f.One.A 0,0 5x5", "field f.Two.B 0,0 5x5"}},
+		{"a written flow layout is itself", `<subform name="f" layout="tb">`, 2,
+			[]string{"field f.One.A 0,0 5x5", "field f.Two.B 0,0 5x5"}},
+	} {
+		l := laidOut(t, `<template>`+tc.root+body+`</subform></template>`)
+		if len(l.Pages) != tc.pages {
+			t.Errorf("%s: %d sheets, want %d", tc.what, len(l.Pages), tc.pages)
+		}
+		same(t, tc.what, laid(l), tc.want)
+	}
+}

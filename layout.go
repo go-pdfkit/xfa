@@ -523,8 +523,21 @@ func (p *placer) children(n *FormNode, f frame) {
 	case "rl-row":
 		p.firstOnly(kids, lay, f, wide, cols)
 	default:
+		// A positioned child is measured from INSIDE its container's insets,
+		// not from the container's own corner. pdfium adds every ancestor's
+		// margin/@leftInset and @topInset on the way down —
+		// CXFA_ContentLayoutItem::GetAbsoluteRect,
+		// xfa/fxfa/layout/cxfa_contentlayoutitem.cpp:82-90 — for every layout
+		// kind, and that is the rectangle it draws with
+		// (cxfa_ffwidget.cpp:228). [placer.stack] has always done the same for
+		// a stacked child; this arm did not.
+		in, ok := marginOf(n.Template)
+		if !ok {
+			p.rejectKids(kids, "the container holding it writes a margin that is not in lengths")
+			return
+		}
 		for _, kid := range kids {
-			p.place(kid, frame{x: f.x, y: f.y, avail: f.avail, wide: wide, cols: cols})
+			p.place(kid, frame{x: f.x + in.left, y: f.y + in.top, avail: f.avail, wide: wide, cols: cols})
 		}
 	}
 }
