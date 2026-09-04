@@ -505,3 +505,25 @@ func TestARootThatWritesNoLayoutFlows(t *testing.T) {
 		same(t, tc.what, laid(l), tc.want)
 	}
 }
+
+func TestABreakOnAContainerTheTemplateHidesDoesNotTurnTheSheet(t *testing.T) {
+	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
+	  <draw name="A" w="1pt" h="5pt"/>
+	  <subform name="S" layout="tb" presence="hidden"><breakBefore targetType="pageArea" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{"0: draw f.A 0,0 1x5", "0: draw f.S.B 0,5 1x5"})
+}
+
+func TestABreakAfterAContainerTheTemplateHidesDoesNotTurnItEither(t *testing.T) {
+	// Where the leaves of a hidden container go is not what this asserts —
+	// pdfium places them at the cursor, off the paper if that is where the
+	// cursor is, and the corpus's one instance agrees with it to the point.
+	// What it asserts is that no sheet is turned for them.
+	l := laidOut(t, sheets(`>`+sheet("P", "", "100", ""), `
+	  <subform name="S" layout="tb" presence="hidden"><breakAfter targetType="pageArea" startNew="1"/>
+	    <draw name="A" w="1pt" h="5pt"/></subform>
+	  <draw name="B" w="1pt" h="5pt"/>`))
+	if len(l.Pages) != 1 {
+		t.Errorf("%d sheets, want 1", len(l.Pages))
+	}
+}
