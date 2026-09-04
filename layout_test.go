@@ -128,7 +128,7 @@ func TestAFormPlacedByHand(t *testing.T) {
 func TestAPositionedFormNeedsNoFirstChildRule(t *testing.T) {
 	// The same body under a positioned outermost subform: now every child is
 	// placed at its own coordinates, Body's x=5 y=7 among them.
-	l := laidOut(t, strings.Replace(worked, `name="form1" layout="tb"`, `name="form1"`, 1))
+	l := laidOut(t, strings.Replace(worked, `name="form1" layout="tb"`, `name="form1" layout="position"`, 1))
 	same(t, "the page", laid(l), []string{
 		"draw form1.Page1.Stamp 10,20 30x40",
 		// Body: 18+5, 36+7 = 23,43; A: 24,45; Inner: 33,63; B: 36,67
@@ -182,7 +182,7 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			  </pageSet></subform></template>`,
 			[]string{"f.P2.Two: its page area is never used: no page of this form is one"}},
 		{"an origin that is not a place",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" x="over there"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{`f.S.A: its origin is written as x="over there" y="", which is not a place`}},
 		{"a size that is not a size",
@@ -198,12 +198,12 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			  <draw name="A" w="1pt" maxH="9pt"/></subform></template>`,
 			[]string{"f.A: " + boundByTheRoom("maxH")}},
 		{"a container anchored by a corner, with no size of its own",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" anchorType="bottomLeft"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{"f.S.A: it is anchored by a corner other than its top left, and its size is not written: " +
 				"only measuring its contents would give it"}},
 		{"a container turned on its side",
-			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
+			`<template><subform name="f" layout="position"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" rotate="90" w="9pt" h="9pt"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{"f.S.A: its contents are turned, which this slice does not follow"}},
 		{"a row that fills from the right",
@@ -240,7 +240,7 @@ func TestASubformSetHoldsNoPlaceOfItsOwn(t *testing.T) {
 }
 
 func TestAnExclGroupPlacesItsButtons(t *testing.T) {
-	l := laidOut(t, `<template><subform name="f">
+	l := laidOut(t, `<template><subform name="f" layout="position">
 	  <pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 	  <exclGroup name="Sex" x="10pt" y="10pt">
 	    <field name="M" x="0pt" y="0pt" w="8pt" h="8pt"/>
@@ -371,7 +371,7 @@ func TestAContainerAnchoredByACornerMovesWhatIsInside(t *testing.T) {
 	// transform moves the subtree with it. Worked by hand: the subform names
 	// its bottom left corner at 0,100 and is 50 tall, so its top left is at
 	// 0,50, and the field one point across and two down from that is at 1,52.
-	l := laidOut(t, `<template><subform name="f">
+	l := laidOut(t, `<template><subform name="f" layout="position">
 	  <pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 	  <subform name="S" anchorType="bottomLeft" y="100pt" w="100pt" h="50pt">
 	    <field name="A" x="1pt" y="2pt" w="5pt" h="5pt"/>

@@ -132,7 +132,9 @@ func (p *placer) splittable(n *FormNode) bool {
 	switch layoutOf(n) {
 	case "tb", "table", "lr-tb", "rl-tb":
 	default:
-		return false
+		if !p.forcedTb(n) {
+			return false
+		}
 	}
 	if n.Kind == "subform" {
 		switch n.Template.Child("keep").Get("intact") {
@@ -144,6 +146,43 @@ func (p *placer) splittable(n *FormNode) bool {
 		return false
 	}
 	return true
+}
+
+// forcedTb says the outermost subform of the template writes no layout it can
+// read, which pdfium lays out as tb rather than as position.
+//
+// pdf.js reads an absent or unrecognised layout as "position" wherever it
+// appears (getStringOption, utils.js:70-76), and this package followed it —
+// see [layoutOf]. pdfium does not, and only for this one node: GetLayout
+// (cxfa_contentlayoutprocessor.cpp:365-379) returns the attribute where it
+// parses to one of the seven values, and where it does NOT and the node's
+// parent is the <form> root it returns Tb with bRootForceTb set. A positioned
+// container is never flowed, so a <break> inside one is never reached
+// (DoLayoutPositionedContainer recurses with bUseBreakControl false, line
+// 1163, and the break stage begins by testing it, line 1751) — which is why
+// the difference shows as a sheet count and not as a coordinate.
+//
+// FOUR of the corpus's 560 root subforms write no layout, and three of them
+// are forms this package put on one sheet where pdfium and pdf.js both use
+// two: us-opm__sf39, us-opm__sf39a and us-opm__sf813. The fourth,
+// us-opm__sf181, has one child and no break.
+//
+// # The half of bRootForceTb this does NOT do
+//
+// pdfium's flag has a second effect: CalculateRowChildPosition
+// (2062-2117) gives such a root's children their WRITTEN x and y
+// (CalculatePositionedContainerPos) instead of the packing cursor — flowed for
+// pagination, positioned for coordinates. This stacks them. Nothing in the
+// corpus separates the two: every child of all four roots writes no x and no
+// y, so the cursor and the written origin are the same point. It is named here
+// rather than written because no form measures it, and a rule nothing measures
+// is a rule nobody can be wrong about out loud.
+func (p *placer) forcedTb(n *FormNode) bool {
+	if n != p.root || n.Kind != "subform" {
+		return false
+	}
+	v := n.Template.Get("layout")
+	return !flowLayouts[v] && v != "position"
 }
 
 // opened is the container's own level of the flowing chain, or nil where it is
@@ -213,11 +252,20 @@ func (p *placer) body(root *FormNode) {
 // the bottom: this asks for another content area, and those report what is
 // left.
 func (p *placer) flow(n *FormNode) {
-	if wraps(layoutOf(n)) {
+	if wraps(p.effective(n)) {
 		p.flowLines(n)
 		return
 	}
 	p.flowStack(n)
+}
+
+// effective is the layout the flowing chain works in. It is [layoutOf]
+// everywhere but the one node [placer.forcedTb] names.
+func (p *placer) effective(n *FormNode) string {
+	if p.forcedTb(n) {
+		return "tb"
+	}
+	return layoutOf(n)
 }
 
 // flowStack puts a splittable stack's children one below the other.
@@ -239,7 +287,7 @@ func (p *placer) flowStack(n *FormNode) {
 			}
 			p.flow(kid)
 			p.pop()
-		} else if !p.whole(kid, lv, layoutOf(n)) {
+		} else if !p.whole(kid, lv, p.effective(n)) {
 			p.rejectKids(kids[i+1:], p.blocked)
 			return
 		}
