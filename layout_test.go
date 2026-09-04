@@ -206,10 +206,11 @@ func TestWhatIsReportedRatherThanPlaced(t *testing.T) {
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
 			  <subform name="S" rotate="90" w="9pt" h="9pt"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
 			[]string{"f.S.A: its contents are turned, which this slice does not follow"}},
-		{"a layout that fills from the right",
+		{"a row that fills from the right",
 			`<template><subform name="f"><pageSet><pageArea name="P"><contentArea/></pageArea></pageSet>
-			  <subform name="S" layout="rl-tb"><field name="A" w="1pt" h="1pt"/></subform></subform></template>`,
-			[]string{"f.S.A: a rl-tb layout fills from the right, which needs a width not computed here"}},
+			  <subform name="S" layout="rl-row"><field name="A" w="1pt" h="1pt"/>
+			  <field name="B" w="1pt" h="1pt"/></subform></subform></template>`,
+			[]string{"f.S.B: a rl-row layout fills from the right, which needs a width not computed here"}},
 	} {
 		if got := notLaid(laidOut(t, tc.src)); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
 			t.Errorf("%s: %v, want %v", tc.what, got, tc.want)
@@ -337,9 +338,9 @@ func TestAnchorTypeAndRotateAreResolvedIntoTheBox(t *testing.T) {
 
 func TestEveryFlowLayoutIsAnsweredForOrRefusedByName(t *testing.T) {
 	// Each of the six has to be recognised, or its children would be placed at
-	// coordinates the layout throws away. Two of them this slice follows; the
-	// other four say which one they are in the reason they give.
-	placed := map[string]int{"tb": 2, "table": 2, "lr-tb": 1, "row": 0, "rl-tb": 0, "rl-row": 0}
+	// coordinates the layout throws away. Four of them this package follows;
+	// the other two say which one they are in the reason they give.
+	placed := map[string]int{"tb": 2, "table": 2, "lr-tb": 2, "rl-tb": 2, "row": 0, "rl-row": 1}
 	var names []string
 	for lay := range flowLayouts {
 		names = append(names, lay)
@@ -356,6 +357,7 @@ func TestEveryFlowLayoutIsAnsweredForOrRefusedByName(t *testing.T) {
 		if placed[lay] == 2 {
 			continue
 		}
+		// rl-row places its first child and names itself for the rest.
 		// A row with no columnWidths above it is refused for want of them,
 		// which names the row; the rest name their own layout.
 		if len(notLaid(l)) == 0 || !strings.Contains(notLaid(l)[0], lay) {

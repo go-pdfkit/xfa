@@ -258,11 +258,24 @@ func TestWhatAStackReportsRatherThanPlaces(t *testing.T) {
 				`f.B: a tb layout stacks its children, and the height of the one above it is not computed: ` +
 					`it holds something whose origin is written as y="down a bit", which is not a place`,
 			}},
-		{"a line-wrapping layout inside a stack",
-			`<subform name="S" layout="lr-tb"><draw name="A" w="1pt" h="1pt"/></subform>
-			 <draw name="B" w="1pt" h="1pt"/>`,
-			[]string{"f.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
-				"a lr-tb layout wraps its children onto lines, and how many lines they come to is not computed here"}},
+		{"a line-wrapping layout holding something wider than a line of it",
+			// The second draw cannot go on the line the first fills and does
+			// not fit on one of its own either, so pdf.js's answer for it
+			// turns on state the measurement does not carry. See
+			// [widerThanALine].
+			`<subform name="S" layout="lr-tb" w="10pt">
+			   <draw name="A" w="10pt" h="1pt"/><draw name="B" w="20pt" h="1pt"/></subform>
+			 <draw name="C" w="1pt" h="1pt"/>`,
+			[]string{
+				"f.S.A: a lr-tb layout wraps its children onto lines, and this one cannot be broken into them: " +
+					widerThanALine,
+				"f.S.B: a lr-tb layout wraps its children onto lines, and this one cannot be broken into them: " +
+					widerThanALine,
+				// The wrapping container is one of the flowing chain, so what
+				// stopped it stops everything after it at every level above.
+				"f.C: a lr-tb layout wraps its children onto lines, and this one cannot be broken into them: " +
+					widerThanALine,
+			}},
 		{"a row with no columns above it",
 			`<subform name="T" layout="table">
 			   <subform name="R" layout="row"><draw name="A" w="1pt" h="1pt"/></subform></subform>`,

@@ -131,7 +131,7 @@ var flowLayouts = map[string]bool{
 // style.top from the node's own x and y (html_utils.js:112-123).
 //
 // Under a FLOW layout the coordinates are thrown away (html_utils.js:347-350)
-// and the children are stacked instead. This follows two of the six:
+// and the children are stacked instead. This follows five of the six:
 //
 //   - tb and table stack downwards. The first child sits at the container's
 //     own origin, and each one after it begins where the one above it ends
@@ -143,6 +143,11 @@ var flowLayouts = map[string]bool{
 //   - row cuts its cells from the columnWidths of the table above it
 //     (html_utils.js:81-106), a cell spanning colSpan of them, and stretches
 //     every cell to the height of the tallest (layout.js:135-143).
+//   - lr-tb and rl-tb fill a line across the page and begin another when what
+//     comes next does not fit on it (layout.js:107-129, 279-338). lr-tb runs
+//     from the container's left edge and rl-tb from its right, which is the
+//     only difference between them (xfa_layer_builder.css:263-273). See
+//     [placer.pack].
 //
 // A container's margin is its own, outside what it holds: it moves the
 // children in by the left and top insets and adds all four to the height the
@@ -161,25 +166,27 @@ var flowLayouts = map[string]bool{
 // begins again at the top of the new content area, which is what pdf.js
 // arrives at by re-entering the whole tree with a new space.
 //
-// A container that would have to be BROKEN in two for its parts to fit is not
-// broken: pdf.js keeps [$extra].children, a generator and a failingNode to do
-// that (layout.js:38-53), and this does not. A container that may be split
-// (Subform[$isSplittable], template.js:4940-4975) has its children distributed
-// across pages instead, which is the same thing where the container itself
-// draws nothing; one that may not — a positioned layout, a row, or anything
-// kept intact — moves whole, and is reported unplaced where it fits no page at
-// all.
+// A container that may be split (Subform[$isSplittable],
+// template.js:4940-4975) has its children distributed across the sheets: what
+// it managed to place stays where it is and the rest begins again at the top
+// of the next content area, which is the same thing pdf.js arrives at by
+// resuming its generator. One that may not — a positioned layout, a row,
+// anything kept intact, anything inside an <area>, and anything that is not
+// first on the line of a container that wraps — moves whole, and is reported
+// unplaced where it fits no page at all. A container that WRAPS is split at a
+// line boundary and never inside one.
 //
 // # What it deliberately does not do, and reports instead
 //
-//   - lr-tb, and rl-tb, rl-row. The first wraps its children onto lines, which
-//     needs their widths and a line-breaking rule; the last two fill from the
-//     right, which needs the container's width. Only the first child of an
-//     lr-tb is placed, at the container's origin.
-//   - Text measurement. A field whose template writes no height has no height
-//     until its text is measured — and under a stack, neither has anything
-//     below it, because where the next child begins is the height of this one.
-//   - Breaking one container in two across a page boundary, as above.
+//   - rl-row, which fills a ROW from the right. That needs the row's own
+//     width, which is the sum of the columnWidths above it rather than
+//     anything measured, and no form of the corpus writes one — so nothing
+//     would say whether it were right. Only its first child is placed, at the
+//     container's origin.
+//   - Refusing a child of a line for want of vertical room. checkDimensions
+//     would move one too tall for what is left onto the next line
+//     (layout.js:284-290); the room left is not a quantity the measurement
+//     carries. See [placer.pack].
 //   - Borders. A child's origin is the inside of its parent's margin, not the
 //     inside of its parent's border.
 //

@@ -571,9 +571,18 @@ func (p *placer) flowLines(n *FormNode) {
 			p.rejectKids(kids[i:], p.blocked)
 			return
 		}
+		was := [3]int{len(p.layout.Pages), p.slot, len(p.used)}
 		if p.fires(kid, false) {
 			p.rejectKids(kids[i:], noNextPage)
 			return
+		}
+		if was != [3]int{len(p.layout.Pages), p.slot, len(p.used)} {
+			// A break moved the flow, and the packing's offsets are measured
+			// from the content area it began in. This child is where the new
+			// one begins; the line it is on keeps the place across the page
+			// that the packing gave it, because the packing was computed once
+			// and pdf.js recomputes it.
+			lv.skip = b.y
 		}
 		if b.line != line {
 			line = b.line
