@@ -1123,3 +1123,414 @@ func TestPaginationAgainstPdfjs(t *testing.T) {
 		t.Logf("  %-40s %s", form, what)
 	}
 }
+
+// A lineFault is one property of a line that a form broke, with enough of the
+// line written out to look at.
+type lineFault struct {
+	form, prop, detail string
+}
+
+// TestIntraLinePlacementProperties asks whether the boxes on one LINE are
+// where a line's boxes have to be.
+//
+//	XFACORPUS=/path/to/parts go test -run IntraLinePlacement -v
+//
+// # Why a property and not an agreement
+//
+// This is the one part of the layout no judge in this repository can see.
+// pdf.js emits no coordinate inside a line — createLine wraps a wrapping
+// container's children in a div of class xfaLr or xfaRl (layout.js:57-65) and
+// a table row in one of class xfaRow (xfa_layer_builder.css:298-302), all
+// three of them flexboxes, and the browser places the children. So
+// [TestPlacementAgainstPdfjs] has nothing to pair against, and every release
+// since v0.5.0 has said so.
+//
+// pdfium is the other free implementation and DOES compute intra-line
+// geometry — CalculateRowChildPosition, cxfa_contentlayoutprocessor.cpp:2028-2160
+// — but nothing in it can be reached from outside: no export of public/
+// returns a layout item's position, and its own suite asserts no coordinate
+// anywhere. Its layout test (cxfa_layoutitem_embeddertest.cpp) counts pages.
+//
+// So this asks what a correct line must satisfy rather than who agrees with
+// it. Each property is one a wrong packing usually breaks, and none of them is
+// derived from the coordinates being checked: which line a box went on comes
+// from the packing, and which cells are one row comes from the tree.
+//
+// # What it cannot see, and it is the same shape as before
+//
+// A line packed in the WRONG ORDER at the right widths satisfies every one of
+// these: no two boxes overlap, each begins where the one before it ended, the
+// line is no wider than its container. Order among the boxes of a line is
+// checked against DOCUMENT order, so a packing that reversed two children
+// would be caught — but one that put the right boxes on the wrong LINE, with
+// each line still well formed, would not. Nor can a property say whether the
+// widths themselves are right: a line of three boxes each half the width they
+// should be packs perfectly.
+func TestIntraLinePlacementProperties(t *testing.T) {
+	dir := os.Getenv("XFACORPUS")
+	if dir == "" {
+		t.Skip("no XFACORPUS")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+
+	var faults []lineFault
+	// The packing's own population: containers, packings of them, lines and
+	// boxes. A container packed at two different widths is two packings.
+	var packedConts, packings, packedLines, packedBoxes, packedHidden, packedPairs int
+	// The paper's population: lines whose members reached the page, and the
+	// members that did.
+	var paperLines, paperMembers, paperPairs, paperRows, paperCells, rowPairs int
+	var spanning, unplacedMember int
+	byLayout := map[string]int{}
+
+	for _, name := range names {
+		form := filepath.Base(strings.TrimSuffix(name, ".template.xml"))
+		tmpl := readNode(t, name, true)
+		if tmpl == nil {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".template.xml")
+		f := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
+		l, p := placeForm(f)
+
+		conts := map[*FormNode]bool{}
+		for k, pk := range p.packs {
+			if pk.why != "" {
+				continue
+			}
+			conts[k.n] = true
+			packings++
+			byLayout[layoutOf(k.n)]++
+			c, fs := checkOnePacking(form, k.n, k.wide, pk.f)
+			packedLines += c.lines
+			packedBoxes += c.boxes
+			packedHidden += c.hidden
+			packedPairs += c.pairLines
+			faults = append(faults, fs...)
+		}
+		packedConts += len(conts)
+
+		// The paper. A member of a line is a whole child of the wrapping
+		// container, and what reached the page is its LEAVES, so its extent
+		// is theirs — the union of the boxes placed for the elements under
+		// it, taken per sheet because a member that was flowed may have been
+		// split across two.
+		ext := extentsOf(l, p)
+		for cont := range conts {
+			if layoutOf(cont) != "lr-tb" && layoutOf(cont) != "rl-tb" {
+				continue
+			}
+			var fl fill
+			for k, pk := range p.packs {
+				if k.n == cont && pk.why == "" {
+					fl = pk.f
+				}
+			}
+			c, fs := checkOnPaper(form, cont, layoutOf(cont), lineGroups(fl), ext)
+			paperLines += c.lines
+			paperMembers += c.members
+			paperPairs += c.compared
+			spanning += c.spanning
+			unplacedMember += c.unplaced
+			faults = append(faults, fs...)
+		}
+		// A table row is the third flexbox, and its members are its cells in
+		// document order: one line, always.
+		f.Root.Walk(func(n *FormNode) {
+			if layoutOf(n) != "row" && layoutOf(n) != "rl-row" {
+				return
+			}
+			kids := contained(n)
+			if len(kids) == 0 {
+				return
+			}
+			c, fs := checkOnPaper(form, n, layoutOf(n), [][]*FormNode{kids}, ext)
+			paperRows += c.lines
+			paperCells += c.members
+			rowPairs += c.compared
+			spanning += c.spanning
+			unplacedMember += c.unplaced
+			faults = append(faults, fs...)
+		})
+	}
+
+	t.Logf("THE PACKING, in the container's own coordinates")
+	t.Logf("  %d wrapping containers reached, packed %d times between them", packedConts, packings)
+	for lay, n := range byLayout {
+		t.Logf("    %-6s %d packings", lay, n)
+	}
+	t.Logf("  %d lines, %d boxes on them, of which %d are hidden and take no room",
+		packedLines, packedBoxes, packedHidden)
+	t.Logf("  %d of those lines hold MORE THAN ONE box, which is what an order and an overlap "+
+		"can be asked of at all", packedPairs)
+	t.Logf("THE PAPER, absolute on the sheet")
+	t.Logf("  %d lines of a wrapping container, %d members of them placed, %d of those members "+
+		"on a line with a NEIGHBOUR to be compared against", paperLines, paperMembers, paperPairs)
+	t.Logf("  %d table rows, %d cells of them placed, %d of those cells with a NEIGHBOUR",
+		paperRows, paperCells, rowPairs)
+	t.Logf("  %d members placed on more than one sheet, so not compared; %d with nothing on the paper",
+		spanning, unplacedMember)
+
+	if len(faults) == 0 {
+		t.Logf("VIOLATIONS: none")
+		return
+	}
+	counts := map[string]int{}
+	for _, v := range faults {
+		counts[v.prop]++
+	}
+	var props []string
+	for k := range counts {
+		props = append(props, k)
+	}
+	sort.Strings(props)
+	t.Logf("VIOLATIONS: %d", len(faults))
+	for _, k := range props {
+		t.Logf("  %6d  %s", counts[k], k)
+	}
+	shown := map[string]int{}
+	for _, v := range faults {
+		if shown[v.prop] >= 5 {
+			continue
+		}
+		shown[v.prop]++
+		t.Logf("  %s: %s: %s", v.form, v.prop, v.detail)
+	}
+}
+
+// lineGroups is a packing's boxes gathered into the lines they went on, in
+// document order within each.
+func lineGroups(fl fill) [][]*FormNode {
+	var out [][]*FormNode
+	for _, b := range fl.boxes {
+		for len(out) <= b.line {
+			out = append(out, nil)
+		}
+		out[b.line] = append(out[b.line], b.node)
+	}
+	return out
+}
+
+// checkOnePacking asks the five properties of one container's packing, in the
+// coordinates the packing itself works in — where the room across the page is
+// known exactly, because it is what the packing was given.
+func checkOnePacking(form string, n *FormNode, wide Measure, fl fill) (c census, faults []lineFault) {
+	name := n.Path
+	lineOf := map[int][]lineBox{}
+	for _, b := range fl.boxes {
+		lineOf[b.line] = append(lineOf[b.line], b)
+	}
+	c.lines = len(lineOf)
+	for li := range len(lineOf) {
+		bs := lineOf[li]
+		var seen int
+		var prev *lineBox
+		var top Measure
+		var reach Measure
+		for i := range bs {
+			b := bs[i]
+			c.boxes++
+			if isHidden(b.node) {
+				c.hidden++
+				continue
+			}
+			seen++
+			if b.x < 0 {
+				faults = append(faults, lineFault{form, "a box begins before its container's content origin",
+					fmt.Sprintf("%s line %d: %s at x=%g", name, li, b.node.Path, float64(b.x))})
+			}
+			if i == 0 {
+				top = b.y
+			} else if b.y != top {
+				faults = append(faults, lineFault{form, "a box on a line is not in the line's vertical band",
+					fmt.Sprintf("%s line %d: %s at y=%g, the line begins at %g",
+						name, li, b.node.Path, float64(b.y), float64(top))})
+			}
+			if prev != nil {
+				if b.x < prev.x {
+					faults = append(faults, lineFault{form, "the boxes of a line are not in document order across it",
+						fmt.Sprintf("%s line %d: %s at x=%g after %s at x=%g",
+							name, li, b.node.Path, float64(b.x), prev.node.Path, float64(prev.x))})
+				} else if float64(prev.x+prev.w-b.x) > fitSlop {
+					faults = append(faults, lineFault{form, "two boxes of a line overlap",
+						fmt.Sprintf("%s line %d: %s reaches %g, %s begins at %g",
+							name, li, prev.node.Path, float64(prev.x+prev.w), b.node.Path, float64(b.x))})
+				}
+			}
+			reach = max(reach, b.x+b.w)
+			prev = &bs[i]
+		}
+		if seen > 1 {
+			c.pairLines++
+		}
+		if reach > 0 && !fits(reach, wide) {
+			faults = append(faults, lineFault{form, "a line is wider than the room its container gives",
+				fmt.Sprintf("%s line %d reaches %g in %g", name, li, float64(reach), float64(wide))})
+		}
+	}
+	return c, faults
+}
+
+// A census is how much of a population a check actually reached. It is kept
+// apart from the violations because the two answer different questions, and
+// the second is worthless without the first: a check that compared nothing
+// reports no violation either.
+type census struct {
+	// lines is how many lines were looked at, boxes how many boxes were on
+	// them, hidden how many of those take no room. pairLines is the lines
+	// holding more than one box that takes room — the only ones an order or
+	// an overlap is a question about.
+	lines, boxes, hidden, pairLines int
+	// members is how many members of a line reached the paper, compared how
+	// many of those had a neighbour on their own line to be compared against,
+	// spanning how many were placed on more than one sheet and unplaced how
+	// many reached no sheet at all.
+	members, compared, spanning, unplaced int
+}
+
+// A span is where one member of a line came out on the paper: the union of
+// the boxes placed for the elements under it, on one sheet.
+type span struct {
+	page       int
+	x, y, r, b Measure
+	n          int
+}
+
+// extentsOf is, for every element the form placed, the span its subtree came
+// to on each sheet.
+//
+// It is built from the boxes upwards rather than from the tree downwards
+// because a container is not a box: only fields and draws reach [Page.Boxes],
+// and a member of a line is usually neither. Hidden boxes are left out — the
+// template asks for them not to be drawn and a flow layout gives them no room,
+// so a hidden leaf's rectangle says nothing about where its container reaches.
+func extentsOf(l *Layout, p *placer) map[*FormNode]map[int]*span {
+	out := map[*FormNode]map[int]*span{}
+	for pi, pg := range l.Pages {
+		for _, b := range pg.Boxes {
+			if b.Hidden || b.Rect.W == 0 && b.Rect.H == 0 {
+				continue
+			}
+			for n := b.Node; n != nil; n = p.up[n] {
+				per, ok := out[n]
+				if !ok {
+					per = map[int]*span{}
+					out[n] = per
+				}
+				s, ok := per[pi]
+				if !ok {
+					per[pi] = &span{page: pi, x: b.Rect.X, y: b.Rect.Y,
+						r: b.Rect.X + b.Rect.W, b: b.Rect.Y + b.Rect.H, n: 1}
+					continue
+				}
+				s.x = min(s.x, b.Rect.X)
+				s.y = min(s.y, b.Rect.Y)
+				s.r = max(s.r, b.Rect.X+b.Rect.W)
+				s.b = max(s.b, b.Rect.Y+b.Rect.H)
+				s.n++
+			}
+		}
+	}
+	return out
+}
+
+// checkOnPaper asks the properties of a line again, of where its members
+// actually came out on the sheet.
+//
+// This is the half [checkOnePacking] cannot reach. The packing works in the
+// container's own coordinates and stops at its own children; between it and
+// the paper are [lineX], which anchors a line at the container's left edge for
+// lr-tb and at its right for rl-tb, the offsets of every container above, and
+// — for a member that is alone on its line and splittable — a whole second
+// route through the flowing chain. A fault in any of those is invisible to the
+// packing and visible here.
+//
+// A member placed on more than one sheet is counted and not compared: its
+// boxes are on two pieces of paper and no single rectangle holds them.
+func checkOnPaper(form string, cont *FormNode, lay string, groups [][]*FormNode, ext map[*FormNode]map[int]*span) (c census, faults []lineFault) {
+	name := cont.Path
+	for li, kids := range groups {
+		var on []*span
+		var who []*FormNode
+		for _, k := range kids {
+			if isHidden(k) {
+				continue
+			}
+			per := ext[k]
+			if len(per) == 0 {
+				c.unplaced++
+				continue
+			}
+			if len(per) > 1 {
+				c.spanning++
+				continue
+			}
+			for _, s := range per {
+				on = append(on, s)
+				who = append(who, k)
+			}
+		}
+		if len(on) == 0 {
+			continue
+		}
+		c.lines++
+		c.members += len(on)
+		if len(on) == 1 {
+			continue
+		}
+		c.compared += len(on)
+		// Everything on one line belongs on one sheet.
+		for i := 1; i < len(on); i++ {
+			if on[i].page != on[0].page {
+				faults = append(faults, lineFault{form, "two members of one line are on different sheets",
+					fmt.Sprintf("%s line %d: %s on sheet %d, %s on sheet %d",
+						name, li, who[0].Path, on[0].page+1, who[i].Path, on[i].page+1)})
+			}
+		}
+		// Across the page, in the direction the layout fills.
+		back := lay == "rl-tb" || lay == "rl-row"
+		for i := 1; i < len(on); i++ {
+			a, b := on[i-1], on[i]
+			if a.page != b.page {
+				continue
+			}
+			lo, hi := a, b
+			if back {
+				lo, hi = b, a
+			}
+			if hi.x < lo.x {
+				faults = append(faults, lineFault{form, "the members of a line are not across the page in document order",
+					fmt.Sprintf("%s line %d (%s): %s at x=%g after %s at x=%g",
+						name, li, lay, who[i].Path, float64(b.x), who[i-1].Path, float64(a.x))})
+			} else if float64(lo.r-hi.x) > fitSlop {
+				faults = append(faults, lineFault{form, "two members of a line overlap on the paper",
+					fmt.Sprintf("%s line %d (%s): %s spans %g..%g, %s spans %g..%g",
+						name, li, lay, who[i-1].Path, float64(a.x), float64(a.r),
+						who[i].Path, float64(b.x), float64(b.r))})
+			}
+		}
+		// Down the page: one line is one band, so every member begins level
+		// with the topmost of them.
+		top, bottom := on[0].y, on[0].b
+		for _, s := range on[1:] {
+			top = min(top, s.y)
+			bottom = max(bottom, s.b)
+		}
+		for i, s := range on {
+			if float64(s.y-top) > fitSlop && float64(s.b-bottom) > fitSlop {
+				faults = append(faults, lineFault{form, "a member of a line is outside the line's vertical band",
+					fmt.Sprintf("%s line %d: %s spans %g..%g, the line spans %g..%g",
+						name, li, who[i].Path, float64(s.y), float64(s.b), float64(top), float64(bottom))})
+			}
+		}
+	}
+	return c, faults
+}
+
+// isHidden says the template asks for this occurrence not to be drawn, which
+// is what makes a box take no room on the line it is on.
+func isHidden(n *FormNode) bool { return hidden(n.Template) }
