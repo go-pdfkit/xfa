@@ -389,7 +389,7 @@ func TestAHeightIsMeasuredOnceAndRemembered(t *testing.T) {
 	// The memo is what keeps a form of a dozen levels from being walked once
 	// per level. A node is marked before its children are measured, so a tree
 	// that somehow held itself would stop rather than recurse for ever.
-	p := &placer{heights: map[heightKey]height{}}
+	p := newPlacer()
 	n := &FormNode{Kind: "draw", Template: &Node{Attr: map[string]string{"h": "5pt"}}}
 	loop := &FormNode{Kind: "subform", Template: &Node{Attr: map[string]string{}}}
 	loop.Kids = []*FormNode{loop}

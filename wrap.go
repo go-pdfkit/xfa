@@ -102,8 +102,9 @@ type fill struct {
 	// w and h are extra.width and extra.height: the widest line, and how far
 	// down the last one reaches.
 	w, h Measure
-	// high is how tall each line came out, which is what the flow needs to ask
-	// whether a whole line fits on the sheet in hand.
+	// high is how tall each line came out. pdf.js keeps no such list — it
+	// checks a child at a time — and [placer.turnTo] needs it because it moves
+	// a whole line at once.
 	high []Measure
 }
 

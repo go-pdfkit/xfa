@@ -199,17 +199,8 @@ func Place(form *Form) *Layout {
 	if root == nil {
 		return l
 	}
-	p := &placer{
-		layout:  l,
-		heights: map[heightKey]height{},
-		widths:  map[heightKey]width{},
-		packs:   map[heightKey]packing{},
-		up:      map[*FormNode]*FormNode{},
-		root:    root,
-		pager:   newPager(root),
-		fired:   map[breakKey]bool{},
-		used:    map[*FormNode]bool{},
-	}
+	p := newPlacer()
+	p.layout, p.root, p.pager = l, root, newPager(root)
 	area, consumed := p.pager.first(root)
 	if area == nil {
 		// pdf.js reads pageAreas[0] with no guard (template.js:5482) and
@@ -377,6 +368,23 @@ type placer struct {
 	// actually reached.
 	fired map[breakKey]bool
 	used  map[*FormNode]bool
+}
+
+// newPlacer is a placer with the maps it measures into ready.
+//
+// There are three of them because a node is asked three separate questions —
+// how tall it is, how wide it is, and how its children fell onto its lines —
+// and none of the three is derivable from the others. All three are written to
+// the first time they are asked, so none may be left nil.
+func newPlacer() *placer {
+	return &placer{
+		heights: map[heightKey]height{},
+		widths:  map[heightKey]width{},
+		packs:   map[heightKey]packing{},
+		up:      map[*FormNode]*FormNode{},
+		fired:   map[breakKey]bool{},
+		used:    map[*FormNode]bool{},
+	}
 }
 
 // cur is the sheet being filled.

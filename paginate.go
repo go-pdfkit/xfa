@@ -46,6 +46,20 @@ type level struct {
 	// recomputed with the rest.
 	wide Measure
 	cols []Measure
+	// cursor and room are where the NEXT child of this container begins across
+	// the page and how much room it has there. They are nought and wide for
+	// every layout but the two that wrap onto lines, where a child begins
+	// after the ones already on its line; [placer.flowLines] sets them from
+	// the packing before it opens a container of its own.
+	cursor, room Measure
+	// line is how many children are already on the line in hand — pdf.js's
+	// [$extra].numberInLine (layout.js:113). It is read by the fourth clause
+	// of [placer.splittable] and by nothing else here.
+	line int
+	// skip is how far down the packing the content area in hand begins, which
+	// is how a wrapping container carries on after a page has been turned
+	// between two of its lines. It is nought for every other layout.
+	skip Measure
 }
 
 // splittable says a container is one this package breaks across a content
@@ -68,10 +82,11 @@ type level struct {
 //     body content, it is not a subform, and $getSubformParent does not skip
 //     it (template.js:4901-4907), so nothing inside an area is ever split.
 //
-//  2. Its own layout is neither "position" nor anything containing "row".
-//     Stated the other way round here — only tb and table — because those are
-//     the two this package stacks. pdf.js would also split lr-tb and rl-tb,
-//     whose height this package does not compute at all.
+//  2. Its own layout is neither "position" nor anything containing "row"
+//     (template.js:4952-4955). Stated the other way round here — tb, table,
+//     lr-tb and rl-tb — which is the same set: "lr-tb".includes("row") is
+//     false, so pdf.js splits a container that wraps onto lines, and so does
+//     this one now that it computes the lines.
 //
 //  3. Its <keep intact> is "none": an author's instruction not to let this
 //     land half on one sheet and half on the next. 1 355 elements of the
@@ -90,12 +105,13 @@ type level struct {
 //     element is splittable then the first 5 children will stay at the end of
 //     the line: we don't want that."
 //
-//     This clause is not code here, and that is a measurement rather than an
-//     omission: the only containers this package ever flows through are tb and
-//     table, neither of which ends in "-tb", so the clause cannot change an
-//     answer. It needs numberInLine — how many children are already on the
-//     current line — which nothing here computes, and which is the lr-tb
-//     slice's to bring.
+//     It is live from this slice. numberInLine is [level.line], which
+//     [placer.flowLines] sets from the packing before it asks this of a child,
+//     and the clause is asked of the container in hand — the innermost open
+//     one — because that is the only container whose line is being filled.
+//     Where the parent is not open, there is no line in hand and the clause
+//     cannot apply; that is the outermost subform, whose parent is the
+//     <template> element.
 //
 // pdf.js memoises the answer within one content area and says outright that it
 // must not be kept across them, because the content area can change
@@ -114,7 +130,7 @@ func (p *placer) splittable(n *FormNode) bool {
 		return false
 	}
 	switch layoutOf(n) {
-	case "tb", "table":
+	case "tb", "table", "lr-tb", "rl-tb":
 	default:
 		return false
 	}
@@ -124,7 +140,21 @@ func (p *placer) splittable(n *FormNode) bool {
 			return false
 		}
 	}
+	if lv := p.opened(parent); lv != nil && wraps(layoutOf(parent)) && lv.line != 0 {
+		return false
+	}
 	return true
+}
+
+// opened is the container's own level of the flowing chain, or nil where it is
+// not one of them.
+func (p *placer) opened(n *FormNode) *level {
+	for _, lv := range p.chain {
+		if lv.node == n {
+			return lv
+		}
+	}
+	return nil
 }
 
 // contentAreas are the boxes a page area offers the body, in order.
@@ -175,13 +205,23 @@ func (p *placer) body(root *FormNode) {
 	p.pop()
 }
 
-// flow puts a splittable stack's children one below the other, moving to the
-// next content area when one of them does not fit.
+// flow lays a splittable container's children out, moving to the next content
+// area when what comes next does not fit.
 //
-// The difference from [placer.stack], which lays out the same thing inside a
-// container that cannot be split, is only what happens at the bottom: this
-// asks for another content area, and that one reports what is left.
+// The difference from [placer.stack] and [placer.wrap], which lay the same two
+// things out inside a container that cannot be split, is only what happens at
+// the bottom: this asks for another content area, and those report what is
+// left.
 func (p *placer) flow(n *FormNode) {
+	if wraps(layoutOf(n)) {
+		p.flowLines(n)
+		return
+	}
+	p.flowStack(n)
+}
+
+// flowStack puts a splittable stack's children one below the other.
+func (p *placer) flowStack(n *FormNode) {
 	lv := p.chain[len(p.chain)-1]
 	kids := contained(n)
 	for i, kid := range kids {
@@ -345,6 +385,7 @@ func (p *placer) seat(lv *level, parentX, parentBottom, parentWide Measure) {
 	// ([placer.splittable]), and neither is ever a cell of a row, so there is no
 	// column width to hand [innerWide].
 	lv.wide = innerWide(lv.node, parentWide, 0, layoutOf(lv.node), lv.in)
+	lv.cursor, lv.room = 0, lv.wide
 	p.y = lv.top
 }
 
@@ -368,7 +409,8 @@ func (p *placer) chainX() Measure {
 	if len(p.chain) == 0 {
 		return p.area.X
 	}
-	return p.chain[len(p.chain)-1].x
+	lv := p.chain[len(p.chain)-1]
+	return lv.x + lv.cursor
 }
 
 func (p *placer) chainBottom() Measure {
@@ -382,7 +424,7 @@ func (p *placer) chainWide() Measure {
 	if len(p.chain) == 0 {
 		return p.wide
 	}
-	return p.chain[len(p.chain)-1].wide
+	return p.chain[len(p.chain)-1].room
 }
 
 // rebase begins every open container again at the top of the content area the
@@ -486,4 +528,153 @@ func (p *placer) startPage(area *FormNode) {
 	p.free = true
 	p.used[area] = true
 	p.placeAt(area, frame{avail: given(page.Height), wide: given(page.Width)}, nil)
+}
+
+// differentWidth is why a wrapping container stops at a page boundary: the
+// lines were broken at the width of the content area it began in, and the one
+// it has moved to is a different width, so every line after the break would be
+// broken in a place this packing did not compute.
+//
+// pdf.js has the same problem and answers it by re-entering the whole tree
+// with the new space, which recomputes the lines from the failing node on.
+// Doing that here would mean re-packing and re-numbering the lines mid-walk,
+// and no page set of the corpus changes the width between two of its content
+// areas, so it stops and says so rather than carrying on at the wrong width.
+const differentWidth = "the lines it wraps onto were broken at the width of the content area it " +
+	"began in, and the next content area is a different width"
+
+// flowLines puts a wrapping container's children on the lines
+// [placer.pack] broke them onto, turning the page between two of them.
+//
+// A LINE is what moves to the next content area, never part of one: pdf.js
+// fails the child that does not fit and re-enters the container in the new
+// space, and every child of the line it was on has already been flushed into
+// that line's div (layout.js:67-91, flushHTML). So the page turns at a line
+// boundary here, and the first line of a sheet goes down whatever its height —
+// which is [placer.whole]'s rule, applied to a line rather than to one element.
+func (p *placer) flowLines(n *FormNode) {
+	lv := p.chain[len(p.chain)-1]
+	lay := layoutOf(n)
+	kids := contained(n)
+	fl, why := p.linesOf(n, lv.wide)
+	if why != "" {
+		p.blocked = fmt.Sprintf(
+			"a %s layout wraps its children onto lines, and this one cannot be broken into them: %s", lay, why)
+		p.rejectKids(kids, p.blocked)
+		return
+	}
+	lv.skip, lv.line = 0, 0
+	line := -1
+	for i, kid := range kids {
+		b := fl.boxes[i]
+		if p.blocked != "" {
+			p.rejectKids(kids[i:], p.blocked)
+			return
+		}
+		if p.fires(kid, false) {
+			p.rejectKids(kids[i:], noNextPage)
+			return
+		}
+		if b.line != line {
+			line = b.line
+			if !p.turnTo(b, fl) {
+				p.rejectKids(kids[i:], p.blocked)
+				return
+			}
+		}
+		lv.line = b.inLine
+		p.y = lv.top + b.y - lv.skip
+		if p.splittable(kid) && alone(fl, i) {
+			lv.cursor, lv.room = lineX(lay, 0, lv.wide, b), b.wide
+			if p.push(kid, 0, 0) {
+				p.flow(kid)
+				p.pop()
+				// The container was flowed rather than packed, so where it
+				// actually ended is where the rest of the lines have to be
+				// measured from — it may have run onto another sheet, and it
+				// is as tall as what it holds rather than as tall as the
+				// packing said.
+				lv.skip = b.y + b.h - (p.y - lv.top)
+			}
+			lv.cursor, lv.room = 0, lv.wide
+		} else {
+			first := p.free
+			p.free, p.noFail = false, first
+			p.touch()
+			p.placeAt(kid, frame{
+				x: lineX(lay, lv.x, lv.wide, b), y: p.y,
+				avail: lv.bottom - p.y, wide: b.wide, cols: lv.cols,
+			}, nil)
+			p.noFail = false
+		}
+		if p.fires(kid, true) {
+			p.rejectKids(kids[i+1:], noNextPage)
+			return
+		}
+	}
+	p.y = lv.top + fl.h - lv.skip
+}
+
+// turnTo moves the flow to a content area with room for the whole line b
+// opens, and returns false where there is none.
+//
+// A whole line, and that is stricter than the test pdf.js writes. The second
+// attempt asks (layout.js:317-338):
+//
+//	if (node.h !== "" && Math.round(h - space.height) > ERROR) return false;
+//	if (node.w === "" || Math.round(w - space.width) <= ERROR) {
+//	  return space.height > ERROR;
+//	}
+//	...
+//	return space.height > ERROR;
+//
+// so a child whose height the template does not WRITE is measured against
+// nothing at all: it is accepted if more than two points of the container
+// remain, however tall it turns out to be.
+//
+// That acceptance is provisional, which is the part that does not port.
+// A child accepted there is then laid out in the room it was handed, its own
+// children are checked against that room, and one of them failing returns
+// HTMLResult.FAILURE from the child — which sends the container to its next
+// line and, failing that, fails the container so the page turns
+// (xfa_object.js:394-403, template.js:5137-5170). This package has no
+// failure to propagate back: a container it has begun to place is placed.
+// So a line accepted on "more than two points remain" would be put down
+// overflowing and everything inside it refused for want of room, where pdf.js
+// turns the page and places it whole.
+//
+// Measured: taking pdf.js's literal test costs 33 fields of us-uscis__i-956h
+// and gains none, and i-956h is one of the 77 forms pdf.js cannot lay out at
+// all, so no judge can say which of the two is right there. The stricter test
+// is the one that puts them on paper.
+func (p *placer) turnTo(b lineBox, fl fill) bool {
+	lv := p.chain[len(p.chain)-1]
+	for !p.free && !fits(lv.top+b.y-lv.skip+fl.high[b.line], lv.bottom) {
+		wide := lv.wide
+		if !p.advance(nil) {
+			p.blocked = noNextPage
+			return false
+		}
+		if lv.wide != wide {
+			p.blocked = differentWidth
+			return false
+		}
+		lv.skip = b.y
+	}
+	return true
+}
+
+// alone says the child at i is the only one on its line, which is the one
+// shape in which this package opens a wrapping container's child as a
+// container of the flowing chain.
+//
+// pdf.js would open any of them: a child of a line is laid out in the space
+// left on it and may be split like anything else. This package will not,
+// because splitting a child that SHARES a line would leave the rest of that
+// line to be placed on a sheet the first half of it is not on. The fourth
+// clause of [placer.splittable] already refuses every child that is not first
+// on its line; this refuses the rest of them.
+func alone(fl fill, i int) bool {
+	b := fl.boxes[i]
+	return b.inLine == 0 && (i+1 == len(fl.boxes) || fl.boxes[i+1].line != b.line)
 }
