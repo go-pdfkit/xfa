@@ -48,33 +48,81 @@ type level struct {
 	cols []Measure
 }
 
-// flowable says a container is one this slice carries across a page boundary:
-// its children before the break stay where they are and the rest go on.
+// splittable says a container is one this package breaks across a content
+// area boundary: the children it managed to place stay where they are, and
+// the rest of it goes on in the next one.
 //
-// pdf.js's rule (Subform[$isSplittable], template.js:4940-4975) is: not a
-// positioned layout, not a row, and not kept intact. This is that rule with
-// the first two clauses stated the other way round — only tb and table stack
-// downwards, which is the only direction this package computes — so it also
-// refuses lr-tb and rl-tb, which pdf.js would split and whose height this
-// package cannot arrive at in the first place.
+// It is a property of the CHAIN and not of the container, which is why it is a
+// method: pdf.js's rule (Subform[$isSplittable], template.js:4940-4975) begins
+// by asking the container above,
 //
-// The keep clause is not decoration: 1 355 elements in the corpus carry keep
-// intact="contentArea", which is a designer saying "do not let this table row
-// land half on one page and half on the next". A container that fails the test
-// moves in one piece.
+//	const parent = this[$getSubformParent]();
+//	if (!parent[$isSplittable]()) { return false; }
 //
-// The enclosing chain matters too, and is handled by construction rather than
-// by a test: this is only ever asked of a container the flow has already
-// reached, and the flow only reaches through containers that pass it.
-func flowable(n *FormNode) bool {
+// and only then looks at the container itself. Four things must all hold.
+//
+//  1. The container above it is splittable. The recursion ends at the
+//     <template> element, which answers yes (template.js:5401-5403). Every
+//     other kind of node answers no by inheriting the base
+//     (xfa_object.js:214-216), and the one that matters is <area>: it holds
+//     body content, it is not a subform, and $getSubformParent does not skip
+//     it (template.js:4901-4907), so nothing inside an area is ever split.
+//
+//  2. Its own layout is neither "position" nor anything containing "row".
+//     Stated the other way round here — only tb and table — because those are
+//     the two this package stacks. pdf.js would also split lr-tb and rl-tb,
+//     whose height this package does not compute at all.
+//
+//  3. Its <keep intact> is "none": an author's instruction not to let this
+//     land half on one sheet and half on the next. 1 355 elements of the
+//     corpus carry one. An exclGroup has the same predicate WITHOUT this
+//     clause (template.js:2405-2429) — read there rather than assumed — and
+//     that difference is kept.
+//
+//  4. If the container above it has a layout ending in "-tb" and has already
+//     put something on the line in hand, it is not splittable. pdf.js gives
+//     the reason in full (template.js:4962-4970):
+//
+//     "If parent can fit in w=100 and there's already an element which takes
+//     90 then we've 10 for this element. Suppose this element has a tb layout
+//     and 5 elements have a width of 7 and the 6th has a width of 20: then
+//     this element (and all its content) must move on the next line. If this
+//     element is splittable then the first 5 children will stay at the end of
+//     the line: we don't want that."
+//
+//     This clause is not code here, and that is a measurement rather than an
+//     omission: the only containers this package ever flows through are tb and
+//     table, neither of which ends in "-tb", so the clause cannot change an
+//     answer. It needs numberInLine — how many children are already on the
+//     current line — which nothing here computes, and which is the lr-tb
+//     slice's to bring.
+//
+// pdf.js memoises the answer within one content area and says outright that it
+// must not be kept across them, because the content area can change
+// (template.js:4941-4942). Nothing is memoised here: the chain is a dozen deep
+// at most, and asking it afresh cannot be wrong for the reason pdf.js names.
+func (p *placer) splittable(n *FormNode) bool {
+	switch n.Kind {
+	case "template":
+		return true
+	case "subform", "exclGroup":
+	default:
+		return false
+	}
+	parent, ok := p.up[n]
+	if !ok || !p.splittable(parent) {
+		return false
+	}
 	switch layoutOf(n) {
 	case "tb", "table":
 	default:
 		return false
 	}
-	switch n.Template.Child("keep").Get("intact") {
-	case "contentArea", "pageArea", "parentSubform":
-		return false
+	if n.Kind == "subform" {
+		switch n.Template.Child("keep").Get("intact") {
+		case "contentArea", "pageArea", "parentSubform":
+			return false
+		}
 	}
 	return true
 }
@@ -87,16 +135,14 @@ func contentAreas(area *FormNode) []*Node {
 // noNextPage is why an element is not placed when the page set has run out.
 const noNextPage = "the form ran out of pages before it: its page set gives no page after the last one"
 
-// tooTallForAPage is why an element that cannot be split is not placed when it
-// does not fit a whole empty content area.
-const tooTallForAPage = "it is taller than a whole content area and cannot be broken, " +
-	"so it could only be placed by splitting it across a page boundary, which this slice does not do"
-
 // noRoomInside is why an element is not placed where the container holding it
 // writes a height too small for what it holds. It cannot be carried to another
 // page: a container that is not split takes its contents with it.
+//
+// It is not reported for the first such container of a sheet, which pdf.js
+// refuses to fail — see [placer.whole] and [placer.noFail].
 const noRoomInside = "there is no room left for it inside the container holding it, " +
-	"which is not one this slice splits across a page boundary"
+	"which is not one this package splits across a page boundary"
 
 // body lays the form's outermost subform out across as many pages as it needs.
 func (p *placer) body(root *FormNode) {
@@ -112,7 +158,7 @@ func (p *placer) body(root *FormNode) {
 	// page it starts on. Neither happens on an outermost subform in the
 	// corpus; the check is here so that one would not be flowed as if its
 	// origin were its top left.
-	if !flowable(root) || anchored(root.Template) || rotateOf(root.Template) != 0 {
+	if !p.splittable(root) || anchored(root.Template) || rotateOf(root.Template) != 0 {
 		p.place(root, frame{x: p.area.X, y: p.area.Y, avail: p.avail, wide: p.wide})
 		return
 	}
@@ -147,7 +193,7 @@ func (p *placer) flow(n *FormNode) {
 			p.rejectKids(kids[i:], noNextPage)
 			return
 		}
-		if flowable(kid) {
+		if p.splittable(kid) {
 			if !p.push(kid, 0, 0) {
 				continue
 			}
@@ -179,28 +225,36 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 			"a %s layout stacks its children, and the height of the one above it is not computed: %s", lay, why)
 		return false
 	}
-	if !fits(p.y+h, lv.bottom) {
-		switch {
-		case !fits(lv.top+h, lv.bottom) && p.chain[0] == lv:
-			// It could not be placed on an empty page either, and there is no
-			// container above it whose own height is what is too small.
-			p.rejectAll(kid, tooTallForAPage)
-			return true
-		case !fits(lv.top+h, lv.bottom):
-			p.rejectAll(kid, noRoomInside)
-			return true
-		case !p.advance(nil):
+	// The first thing that moves in one piece cannot fail to fit, and that is
+	// pdf.js's rule rather than a concession. checkDimensions returns true
+	// outright while the sheet has had none (layout.js:266-268), and the one
+	// that claims it switches noLayoutFailure on before its own check runs
+	// (setFirstUnsplittable, template.js:313-319; called at :5079 for a
+	// subform, :2484 for an exclGroup, :1927 for a draw and :2878 for a
+	// field), so it cannot fail either. Everything after it on that sheet is
+	// checked, and what does not fit sends the whole chain to the next content
+	// area — which is what splitting the containers above it MEANS. There it
+	// is first in its turn, and goes down whatever its height.
+	//
+	// This is why a container taller than a whole content area is not a
+	// refusal: it comes out one per sheet, overflowing, exactly as pdf.js
+	// draws it.
+	for !p.free && !fits(p.y+h, lv.bottom) {
+		if !p.advance(nil) {
 			p.blocked = noNextPage
 			p.rejectAll(kid, noNextPage)
 			return false
-		case !fits(p.y+h, lv.bottom):
-			// The new content area is smaller than the one it came from.
-			p.rejectAll(kid, tooTallForAPage)
-			return true
 		}
 	}
+	// pdf.js marks the first one whether or not it needed the pass, and leaves
+	// noLayoutFailure on for the whole of its subtree — it is unset only on
+	// the way out of that same node (template.js:321-326, 5175-5178). So what
+	// is inside it is not checked either. See [placer.noFail].
+	first := p.free
+	p.free, p.noFail = false, first
 	p.touch()
 	p.placeAt(kid, frame{x: lv.x, y: p.y, avail: lv.bottom - p.y, wide: lv.wide, cols: lv.cols}, nil)
+	p.noFail = false
 	p.y += h
 	return true
 }
@@ -288,7 +342,7 @@ func (p *placer) seat(lv *level, parentX, parentBottom, parentWide Measure) {
 	lv.top = p.y + lv.yoff + lv.in.top
 	lv.bottom = lv.top + room
 	// A container of the flowing chain is always a tb or a table
-	// ([flowable]), and neither is ever a cell of a row, so there is no
+	// ([placer.splittable]), and neither is ever a cell of a row, so there is no
 	// column width to hand [innerWide].
 	lv.wide = innerWide(lv.node, parentWide, 0, layoutOf(lv.node), lv.in)
 	p.y = lv.top
@@ -425,6 +479,11 @@ func (p *placer) startPage(area *FormNode) {
 	}
 	p.layout.Pages = append(p.layout.Pages, page)
 	p.touched = append(p.touched, 0)
+	// pdf.js clears firstUnsplittable and noLayoutFailure once per SHEET,
+	// before the loop over that sheet's content areas (template.js:5536-5538),
+	// so a second content area of the same sheet does not hand out a second
+	// free pass. See [placer.whole].
+	p.free = true
 	p.used[area] = true
 	p.placeAt(area, frame{avail: given(page.Height), wide: given(page.Width)}, nil)
 }

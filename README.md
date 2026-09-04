@@ -135,16 +135,53 @@ Breaks are not a corner: **435 of the 560 forms carry a `<breakBefore>`**, and
 2 155 of the 2 561 in the corpus are `startNew="1"`, which means "a fresh sheet
 here, once".
 
-A container that would have to be **broken in two** for its parts to fit is not
-broken. pdf.js keeps `[$extra].children`, a generator and a `failingNode` to do
-that (`layout.js:38-53`); this does not. A container that *may* be split
-(`Subform[$isSplittable]`, `template.js:4940-4975`) has its children
-distributed across sheets instead, which is the same thing where the container
-itself draws nothing. One that may not — a positioned layout, a row, or
-anything with `keep intact` — moves whole, and is reported unplaced where it
-fits no sheet at all. 1 355 elements in the corpus carry
-`keep intact="contentArea"`, which is a designer saying "do not let this row
-land half on one page and half on the next".
+### Splitting a container is a chain question, not a node question
+
+A container that *may* be split is broken across the boundary: what it placed
+before the break stays where it is, and the rest of it begins again at the top
+of the next content area — which is what pdf.js's saved generator and
+`failingNode` do (`layout.js:38-53`).
+
+Whether it may is **a property of the whole chain above it**, and
+`Subform[$isSplittable]` (`template.js:4940-4975`) asks the container above
+before it looks at the container itself. Four things must all hold:
+
+1. the container above it is splittable — the recursion ends at the
+   `<template>` element, which answers yes (`template.js:5401-5403`), and every
+   other kind of node inherits the base answer, no (`xfa_object.js:214-216`).
+   The one that matters is `<area>`: it holds body content, it is not a
+   subform, and `$getSubformParent` does not skip it — so **nothing inside an
+   area is ever split**;
+2. its own layout is neither `position` nor anything containing `row`;
+3. its `<keep intact>` is `none`. 1 355 elements in the corpus carry
+   `keep intact="contentArea"`, a designer saying "do not let this row land
+   half on one page and half on the next". An `exclGroup` has the same
+   predicate **without** this clause (`template.js:2405-2429`), read there
+   rather than assumed;
+4. if the container above it has a layout ending in `-tb` and has already put
+   something on the line in hand, it is not splittable. That clause is not code
+   here and the doc comment says why: no container this package flows through
+   ends in `-tb`, so it cannot change an answer, and it needs `numberInLine`,
+   which the `lr-tb` slice will bring.
+
+### What moves whole is still put on the paper
+
+A container that may not be split is not dropped for being too tall.
+`checkDimensions` returns true outright while the sheet has had nothing that
+moves in one piece (`layout.js:266-268`), and the one that claims that pass has
+`noLayoutFailure` switched on before its own check runs
+(`setFirstUnsplittable`, `template.js:313-319`), so it cannot fail either — and
+nor can anything inside it, because the flag is cleared only on the way out of
+that same node.
+
+Everything after it on the sheet **is** checked, and what does not fit sends
+the whole chain to the next content area, which is what splitting the
+containers above it *means*. There it is first in its turn, and goes down
+whatever its height. So a container taller than a whole content area comes out
+one per sheet, hanging over the bottom, exactly as pdf.js draws it. The pass is
+handed out once per **sheet**, not once per content area: pdf.js clears
+`firstUnsplittable` in the page loop, before the loop over that sheet's content
+areas (`template.js:5536-5538`).
 
 ### The recursion pdf.js dies on is not in the branch it looks to be in
 
@@ -373,6 +410,43 @@ sides puts the count back to **0**.
 It is slice 4's fault in a new place: a comparison at fault announcing itself
 as a disagreement about the subject.
 
+## Splitting, and 4 260 fields that were never a splitting problem
+
+### What it is worth: 4 260 more fields, and none of them wanted splitting
+
+| | slice 5 | slice 6 |
+|---|---:|---:|
+| **placed** | **71 230** | **75 490** |
+| taller than a whole content area, and cannot be broken | 4 214 | **0** |
+| past the last sheet the page set gives | 1 887 | 1 887 |
+| no room inside a container that moves in one piece | 107 | 61 |
+| under `lr-tb` | 4 303 | 4 303 |
+| anchored by a corner, with no size of its own | 9 | 9 |
+| sheets | 2 737 | 2 864 |
+
+**The disagreement first.** "Most of the 6 208 want a container broken across a
+sheet" is not what they wanted. All 4 214 of the largest bucket are
+**positioned subforms**, and a positioned layout fails clause 2 of
+`$isSplittable`: no rule anywhere would ever have split one of them. They are
+whole-page subforms — `form1.Page1`, `topmostSubform.Page5` — six to thirty
+points taller than the content area they are drawn for, one per printed sheet,
+which is how LiveCycle writes a multi-page form.
+
+What was refusing them was not the absence of a splitter. It was a fit-check
+this package applied and pdf.js does not: **the first thing on a sheet that
+moves in one piece is never measured against anything.** Because the first
+whole-page subform was rejected, the flow never turned the page at all, and
+every later one was rejected against the same sheet. `us-irs__fw9` came out on
+one sheet with 321 fields unplaced, against pdf.js's six sheets.
+
+The reconciliation is exact: 4 214 too-tall placed + 46 freed from
+`noRoomInside` (inside the first such container of a sheet, pdf.js checks
+nothing either) = **4 260**, and 71 230 + 4 260 = **75 490**. No count went
+down anywhere this time.
+
+**1 887 past the last sheet did not move**, which is worth saying: turning more
+pages did not exhaust any page set that was not exhausted before.
+
 ### Checked against pdf.js, which CAN see all of this
 
 The judge from slices 2 and 3 is extended rather than replaced, and one thing
@@ -398,32 +472,48 @@ into the "pdf.js placed it by flexbox" one, where they belong.
 |---|---:|---:|
 | boxes where pdf.js emits a real place | 176 | |
 | **agree exactly** | **176** | **100.00%** |
-| boxes pdf.js placed by flexbox | 152 446 | |
-| ... at the flow container's own origin, where a first child goes | 149 488 | |
-| ... below or to the right of it, where the rest go | 2 958 | |
+| boxes pdf.js placed by flexbox | 161 820 | |
+| ... at the flow container's own origin, where a first child goes | 157 108 | |
+| ... below or to the right of it, where the rest go | 4 712 | |
 | ... **above or to the left of it, which would be outside it** | **0** | **0.00%** |
 
 | which sheet they went on | | |
 |---|---:|---:|
-| forms where this package placed **every** element of the body | 431 | |
-| of those, agreeing with pdf.js on the number of sheets | **428** | 99.3% |
-| boxes paired on those forms | 117 378 | |
-| **on the same sheet as pdf.js put them** | **117 378** | **100.00%** |
+| forms where this package placed **every** element of the body | 473 | |
+| of those, agreeing with pdf.js on the number of sheets | **469** | 99.2% |
+| boxes paired on those forms | 149 433 | |
+| **on the same sheet as pdf.js put them** | **149 433** | **100.00%** |
 | on another sheet | 0 | 0.00% |
-| forms where fewer elements were placed, and so fewer sheets used | 35 | |
-| ... the same number of sheets | 17 | |
+| forms where fewer elements were placed, and so fewer sheets used | 5 | |
+| ... the same number of sheets | 5 | |
 | ... **MORE** sheets, which would be a defect | **0** | 0.00% |
 
-The three sheet-count disagreements are not pagination and not text. Two
-(`us-opm__sf813`, `us-opm__sf39a`) have a **positioned** outermost subform, and
-pdf.js's `checkDimensions` position arm (`layout.js:355-364`) sends children
-reaching past the bottom of the content area onto a second sheet; this package
-does not fit-check a positioned layout at all.
+**The pairing itself was re-audited, not just the rate.** Splitting changes
+which boxes are comparable, so the question is what the judge never gets to
+compare. Of 156 574 body boxes on the 469 agreeing forms: 149 433 paired,
+6 680 unnamed and so never keyed, 461 keyed but absent from pdf.js's dump —
+**460 of those 461 are `presence="hidden"`**, which pdf.js emits as
+`display:none` and the dump does not carry — and **0** dropped because the two
+sides produced a different number of boxes for one key. That last zero is the
+one that matters: splitting did not create a single new mispairing.
+
+Four forms disagree on the sheet count. Two (`us-opm__sf813`, `us-opm__sf39a`)
+are the same two as before and are not pagination: they have a **positioned**
+outermost subform, and pdf.js's `checkDimensions` position arm
+(`layout.js:355-364`) sends children reaching past the bottom of the content
+area onto a second sheet, which this package does not fit-check at all. Two
+(`us-uscis__i-600a`, `us-uscis__i-821`) are newly visible: they were nowhere
+near fully placed before — `i-600a` came out on **one** sheet against pdf.js's
+fourteen — and now come out on thirteen. In both, every box agrees up to a
+`<breakBefore targetType="pageArea" startNew="1"/>` and is one sheet behind
+after it. That is a question about breaks, not about splitting, and it is not
+diagnosed to the line here.
 
 **What none of this covers**: where inside a container the children ended up
 (two orderings come to the same total, and no height tells them apart);
 borders, margins and insets on positioned layouts; anything under a rotated
-ancestor; breaking one container in two across a sheet; and real per-glyph
+ancestor; where a break inside a container that moves whole would have sent
+the page; and real per-glyph
 advances, which nothing here has and which the comparison is therefore blind
 to in both directions. It also could not run on 77 of the 560 forms — 70
 because pdf.js's `selectFont` dereferences a null typeface when no font is
