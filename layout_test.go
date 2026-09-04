@@ -398,3 +398,35 @@ func TestTheShadowWalkStopsGoingDown(t *testing.T) {
 		t.Errorf("it followed %d nodes down a tree %d deep, want %d", n, maxDepth+9, maxDepth+1)
 	}
 }
+
+// TestAPositionedChildBeginsInsideTheInsets is the second thing pdfium settled
+// that pdf.js could not: a container's margin moves what is positioned inside
+// it, and not only what is stacked inside it.
+//
+// pdfium adds every ancestor's margin/@leftInset and @topInset on the way down
+// to an absolute rectangle — CXFA_ContentLayoutItem::GetAbsoluteRect,
+// xfa/fxfa/layout/cxfa_contentlayoutitem.cpp:82-90 — with no test of the
+// layout, and cxfa_ffwidget.cpp:228 makes that the rectangle it draws with.
+// pdf.js hands <margin> to CSS as `margin` on the element (html_utils.js:171-174)
+// and never resolves it into a coordinate at all.
+//
+// 1.27mm is 3.6pt, which is what fr-cerfa__cerfa_12818 writes between a table
+// cell and its four buttons, and 3.6 is exactly what pdfium put them right of
+// where this package did.
+func TestAPositionedChildBeginsInsideTheInsets(t *testing.T) {
+	l := laidOut(t, `<template><subform name="f" layout="position">
+	  <pageSet><pageArea name="P"><contentArea x="10pt" y="20pt"/></pageArea></pageSet>
+	  <subform name="S" x="100pt" y="200pt">
+	    <margin leftInset="1.27mm" topInset="1.27mm" rightInset="1.27mm" bottomInset="1.27mm"/>
+	    <field name="A" x="6.35mm" y="0pt" w="5pt" h="5pt"/>
+	    <subform name="In" x="0pt" y="0pt"><field name="B" w="5pt" h="5pt"/></subform>
+	  </subform></subform></template>`)
+	// S sits at the content area's origin plus its own x and y: 110,220.
+	// A is 6.35mm = 18pt across of S's INSIDE, which begins 3.6 in from S:
+	//   110 + 3.6 + 18 = 131.6, and 220 + 3.6 + 0 = 223.6.
+	// In writes no margin of its own, so B moves by S's insets only.
+	same(t, "the page", laid(l), []string{
+		"field f.S.A 131.6,223.6 5x5",
+		"field f.S.In.B 113.6,223.6 5x5",
+	})
+}
