@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1534,3 +1535,315 @@ func checkOnPaper(form string, cont *FormNode, lay string, groups [][]*FormNode,
 // isHidden says the template asks for this occurrence not to be drawn, which
 // is what makes a box take no room on the line it is on.
 func isHidden(n *FormNode) bool { return hidden(n.Template) }
+
+// A pdfiumBox is one content layout item pdfium placed, as
+// /Users/Shared/pdfiumbuild's probe dumps them. That probe is a source file
+// added to pdfium's own embedder tests, because nothing in public/ returns a
+// layout item's geometry: it walks CXFA_LayoutProcessor's pages and writes
+// every CXFA_ContentLayoutItem's GetAbsoluteRect().
+type pdfiumBox struct {
+	page       int
+	kind, path string
+	x, y, w, h float64
+}
+
+// readPdfium reads one form's dump.
+func readPdfium(name string) (map[string][]pdfiumBox, int, error) {
+	b, err := os.ReadFile(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := map[string][]pdfiumBox{}
+	pages := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) == 2 && f[0] == "#pages" {
+			pages, _ = strconv.Atoi(f[1])
+			continue
+		}
+		if len(f) != 9 || strings.HasPrefix(f[0], "#") {
+			continue
+		}
+		var v pdfiumBox
+		v.page, _ = strconv.Atoi(f[0])
+		v.kind, v.path = f[2], somPath(f[4])
+		v.x, _ = strconv.ParseFloat(f[5], 64)
+		v.y, _ = strconv.ParseFloat(f[6], 64)
+		v.w, _ = strconv.ParseFloat(f[7], 64)
+		v.h, _ = strconv.ParseFloat(f[8], 64)
+		out[v.kind+" "+v.path] = append(out[v.kind+" "+v.path], v)
+	}
+	return out, pages, nil
+}
+
+// somPath turns pdfium's SOM expression into the path this package writes.
+//
+// pdfium indexes every step and names the form tree from the root of the XFA
+// model — "xfa[0].form[0].topmostSubform[0].Page1[0]" — where [FormNode.Path]
+// begins at the outermost subform and indexes only the second and later of
+// repeated siblings. A step pdfium spells with a leading "#" is an element the
+// template did not name, which contributes nothing to [FormNode.Path] either.
+// The two are the same walk written differently, so this is a rewrite and not
+// a guess.
+func somPath(som string) string {
+	steps := strings.Split(som, ".")
+	var out []string
+	for _, s := range steps {
+		name, idx := s, 0
+		if i := strings.IndexByte(s, '['); i >= 0 && strings.HasSuffix(s, "]") {
+			name = s[:i]
+			idx, _ = strconv.Atoi(s[i+1 : len(s)-1])
+		}
+		if name == "xfa" || name == "form" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		if idx > 0 {
+			name = fmt.Sprintf("%s[%d]", name, idx)
+		}
+		out = append(out, name)
+	}
+	return strings.Join(out, ".")
+}
+
+// TestIntraLineAgainstPdfium checks where a box went ACROSS a line against a
+// reference that computes the answer.
+//
+//	XFACORPUS=/path/to/parts XFAPDFIUM=/path/to/dumps go test -run AgainstPdfium -v
+//
+// # Why this is the check that was missing
+//
+// pdf.js hands a line to CSS flexbox and emits no coordinate inside one, so
+// every release since v0.5.0 has said intra-line placement is unjudged in both
+// directions. pdfium is not a DOM emitter but a renderer, and computes the
+// answer outright: CalculateRowChildPosition
+// (cxfa_contentlayoutprocessor.cpp:2028-2160) walks a line assigning each item
+// an x and accumulating its width, and CXFA_ContentLayoutItem::GetAbsoluteRect
+// adds the offsets of the items above it.
+//
+// None of that is reachable from outside. No export of public/ returns a
+// layout item's geometry — FPDFAnnot_GetFormFieldAtPoint reads the PDF's own
+// AcroForm and not the XFA layout — and pdfium's suite asserts no coordinate
+// anywhere in the tree: its one XFA layout test counts pages. So the dump
+// comes from a source file added to pdfium's embedder tests, built with
+// pdf_enable_xfa. The probe is nine lines of walk around GetAbsoluteRect.
+//
+// # What is compared, and what pairs
+//
+// LEAVES: fields and draws, which both sides emit a rectangle for. A
+// container's own box is not compared — this package emits none — but a
+// container placed at the wrong x puts every leaf under it at the wrong x, so
+// the leaves carry the question.
+//
+// Boxes are paired by kind and by the element's SOM path, rewritten from
+// pdfium's spelling by [somPath], and only where both sides produced exactly
+// one box with that key. Where either produced several — an element on more
+// than one sheet, most often a page area's furniture — the key is dropped
+// rather than guessed at.
+//
+// # What it cannot settle
+//
+// pdfium runs the form's scripts, measures text with real fonts and has its
+// own pagination; this package does none of the three. So a leaf under a
+// container whose height came from measured text is at a different y and often
+// on a different sheet, and a disagreement there is not about placement. X
+// across the page is the quantity that survives: a positioned box's x is its
+// written attribute and a line member's x is arithmetic over written widths.
+// Hence the split below — under a line, under a row, and everywhere else,
+// which is the control. A disagreement in all three is not the line's.
+func TestIntraLineAgainstPdfium(t *testing.T) {
+	dir, dumps := os.Getenv("XFACORPUS"), os.Getenv("XFAPDFIUM")
+	if dir == "" || dumps == "" {
+		t.Skip("no XFACORPUS or no XFAPDFIUM")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+
+	// Three populations and the same three questions of each.
+	type tally struct{ paired, sameX, sameY, sameW int }
+	var line, row, rest tally
+	// A disagreement under a line means nothing on a form where the control
+	// disagrees too, so the two are kept apart from the start.
+	var lineBadWhole, rowBadWhole, lineBadOwn, rowBadOwn, formsWhole int
+	var forms, noDump int
+	var oursOnly, theirsOnly, ambiguous int
+	// The same two losses again for the boxes this test exists for, because a
+	// population that quietly halved would make 100% mean nothing.
+	var lineOursOnly, lineAmbiguous, rowOursOnly, rowAmbiguous int
+	var own []string
+
+	for _, name := range names {
+		form := filepath.Base(strings.TrimSuffix(name, ".template.xml"))
+		theirs, _, err := readPdfium(filepath.Join(dumps, form+".tsv"))
+		if err != nil {
+			noDump++
+			continue
+		}
+		tmpl := readNode(t, name, true)
+		if tmpl == nil {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".template.xml")
+		f := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
+		l, _ := placeForm(f)
+		forms++
+
+		// Which line-forming container each element sits under, if any. It is
+		// read off the tree, never off the coordinates.
+		under := map[*FormNode]string{}
+		f.Root.Walk(func(n *FormNode) {
+			lay := layoutOf(n)
+			what := ""
+			switch lay {
+			case "lr-tb", "rl-tb":
+				what = "line"
+			case "row", "rl-row":
+				what = "row"
+			default:
+				return
+			}
+			var mark func(*FormNode)
+			mark = func(k *FormNode) {
+				if _, seen := under[k]; !seen {
+					under[k] = what
+				}
+				for _, kid := range contained(k) {
+					mark(kid)
+				}
+			}
+			for _, kid := range contained(n) {
+				mark(kid)
+			}
+		})
+
+		ours := map[string][]Box{}
+		for _, pg := range l.Pages {
+			for _, b := range pg.Boxes {
+				ours[b.Kind+" "+b.Path] = append(ours[b.Kind+" "+b.Path], b)
+			}
+		}
+		type miss struct {
+			key   string
+			what  string
+			mine  float64
+			their float64
+		}
+		var missed []miss
+		var ctrl, ctrlBad int
+		for key, mine := range ours {
+			what := under[mine[0].Node]
+			them, ok := theirs[key]
+			if !ok {
+				oursOnly++
+				switch what {
+				case "line":
+					lineOursOnly++
+				case "row":
+					rowOursOnly++
+				}
+				continue
+			}
+			if len(mine) != 1 || len(them) != 1 {
+				ambiguous++
+				switch what {
+				case "line":
+					lineAmbiguous++
+				case "row":
+					rowAmbiguous++
+				}
+				continue
+			}
+			to := &rest
+			switch what {
+			case "line":
+				to = &line
+			case "row":
+				to = &row
+			default:
+				ctrl++
+			}
+			to.paired++
+			bad := math.Abs(float64(mine[0].Rect.X)-them[0].x) > 0.01
+			if !bad {
+				to.sameX++
+			} else {
+				if what == "" {
+					ctrlBad++
+				} else {
+					missed = append(missed, miss{key, what, float64(mine[0].Rect.X), them[0].x})
+				}
+			}
+			if math.Abs(float64(mine[0].Rect.Y)-them[0].y) <= 0.01 {
+				to.sameY++
+			}
+			if math.Abs(float64(mine[0].Rect.W)-them[0].w) <= 0.01 {
+				to.sameW++
+			}
+		}
+		for key, them := range theirs {
+			if len(them) == 0 || them[0].kind != "field" && them[0].kind != "draw" {
+				continue
+			}
+			if _, ok := ours[key]; !ok {
+				theirsOnly++
+			}
+		}
+		// The control on this form: every leaf under neither a line nor a
+		// row. Where it disagrees, x on this form is not comparable at all
+		// and a disagreement under a line here says nothing about lines.
+		whole := ctrl > 0 && ctrlBad > 0
+		if !whole {
+			formsWhole++
+		}
+		for _, m := range missed {
+			switch {
+			case m.what == "line" && whole:
+				lineBadWhole++
+			case m.what == "line":
+				lineBadOwn++
+			case whole:
+				rowBadWhole++
+			default:
+				rowBadOwn++
+			}
+			if !whole && len(own) < 20 {
+				own = append(own, fmt.Sprintf("%s: %s under a %s: x=%g, pdfium %g",
+					form, m.key, m.what, m.mine, m.their))
+			}
+		}
+	}
+
+	t.Logf("%d forms with a pdfium dump, %d without one", forms, noDump)
+	t.Logf("%d of those forms agree with pdfium on x for EVERY leaf under neither a line nor a row, "+
+		"which is the only ground a disagreement under one can be read from", formsWhole)
+	t.Logf("unpaired: %d keys this package emits and pdfium does not, %d leaves pdfium emits and it "+
+		"does not, %d where one side emitted the key more than once", oursOnly, theirsOnly, ambiguous)
+	say := func(what string, v tally) {
+		if v.paired == 0 {
+			t.Logf("  %-28s nothing paired", what)
+			return
+		}
+		t.Logf("  %-28s %6d paired   x %6d (%.2f%%)   y %6d (%.2f%%)   w %6d (%.2f%%)",
+			what, v.paired,
+			v.sameX, 100*float64(v.sameX)/float64(v.paired),
+			v.sameY, 100*float64(v.sameY)/float64(v.paired),
+			v.sameW, 100*float64(v.sameW)/float64(v.paired))
+	}
+	say("under a wrapping container", line)
+	t.Logf("        of the rest under one: %d pdfium does not emit, %d one side emitted more than once",
+		lineOursOnly, lineAmbiguous)
+	say("under a table row", row)
+	t.Logf("        of the rest under one: %d pdfium does not emit, %d one side emitted more than once",
+		rowOursOnly, rowAmbiguous)
+	say("under neither — the control", rest)
+	t.Logf("x DISAGREEMENTS, split by whether the form's control agrees:")
+	t.Logf("  under a wrapping container: %d on a form whose control also disagrees, %d on one whose does not",
+		lineBadWhole, lineBadOwn)
+	t.Logf("  under a table row:          %d on a form whose control also disagrees, %d on one whose does not",
+		rowBadWhole, rowBadOwn)
+	for _, w := range own {
+		t.Logf("  %s", w)
+	}
+}
