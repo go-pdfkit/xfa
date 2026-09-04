@@ -95,26 +95,40 @@
 // is a state machine rather than "another of the same" — the page set's
 // relation, each page area's occur, the parity of the page number, and the
 // explicit breaks the template writes — and [Place] follows pdf.js's
-// (template.js:4064-4236, 5418-5657). A container that MAY be split has its
-// children distributed across sheets; one that may not — a positioned layout,
-// a row, anything with keep intact — moves whole. Breaking one container in
-// two is a slice of its own.
+// (template.js:4064-4236, 5418-5657).
+//
+// A container that MAY be split is broken across the boundary: what it placed
+// before the break stays where it is, and the rest of it begins again at the
+// top of the next content area. Whether it may is a property of the whole
+// CHAIN above it and not of the container alone, which is pdf.js's rule and
+// the reason [placer.splittable] recurses upward. One that may not — a
+// positioned layout, a row, anything with keep intact, anything inside an
+// <area> — moves whole.
+//
+// What moves whole is still put on the paper. The first such container of each
+// sheet is not measured against anything: pdf.js's checkDimensions returns
+// true while the sheet has had none (layout.js:266-268) and the one that
+// claims that pass cannot fail either, nor can anything inside it. Everything
+// after it on that sheet is checked, and what does not fit turns the page —
+// where it is first in its turn. So a container taller than a whole content
+// area comes out one per sheet, hanging over the bottom, which is what pdf.js
+// draws.
 //
 // Everything it does not reach — lr-tb and the two layouts that fill from the
-// right, a container taller than any sheet, a form that runs out of pages —
-// comes back in [Layout.Unplaced] with
-// the reason written out, one element at a time. Nothing of the body is
-// dropped. A page area's own furniture is drawn once on every sheet that page
-// area makes, which is the one thing not in one-to-one correspondence with the
-// boxes on the paper.
+// right, a form that runs out of pages, an element with no room inside a
+// container that moves whole — comes back in [Layout.Unplaced] with the reason
+// written out, one element at a time. Nothing of the body is dropped. A page
+// area's own furniture is drawn once on every sheet that page area makes,
+// which is the one thing not in one-to-one correspondence with the boxes on
+// the paper.
 //
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	71 230 placed, 130 846 draws with them, on 2 737 sheets
-//	 6 208 have a place computed and nowhere left to put it: taller than a
-//	       whole content area, or past the last sheet the page set gives
+//	75 490 placed, 140 585 draws with them, on 2 864 sheets
 //	 4 303 sit under lr-tb, which wraps its children onto lines
+//	 1 887 are past the last sheet the page set gives
+//	    61 have no room inside a container that moves in one piece
 //	     9 are anchored by a corner, with no size of their own
 //
 // # What checks it
