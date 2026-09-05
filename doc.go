@@ -169,6 +169,16 @@
 // the set holding it, and starting the set again offers it afresh. Both
 // references say so and neither can quite carry it out — see [pager.cleanKids].
 //
+// WHICH page area each sheet is opened on agrees with pdfium everywhere. Nine
+// of the 559 forms disagree with it on how many sheets there are, and on every
+// one of those nine one side's sequence of page areas is a SUBSEQUENCE of the
+// other's: no sheet of the corpus is opened on a page area pdfium does not
+// choose at that point in the order. Lining the two up by INDEX instead
+// reports ten sheets across three forms as being on the wrong page area, and
+// that number measures the sheet COUNT rather than the choice — a sheet missed
+// in the middle of a run shifts every sheet after it. See
+// [TestSheetsAgainstPdfium], which now asks both.
+//
 // Everything it does not reach — rl-row, which fills a row from the right, a
 // form that runs out of pages, an element with no room inside a container that
 // moves whole — comes back in [Layout.Unplaced] with the reason
