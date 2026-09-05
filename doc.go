@@ -105,6 +105,11 @@
 // positioned layout, a row, anything with keep intact, anything inside an
 // <area> — moves whole.
 //
+// Except a positioned container whose author wrote keep intact="none" on it.
+// That is a permission pdf.js's clause order makes unreachable and pdfium
+// reads, and such a container is laid out whole and then CUT across the
+// boundary, its children keeping their written y. See [placer.cuttable].
+//
 // What moves whole is still put on the paper. The first such container of each
 // sheet is not measured against anything: pdf.js's checkDimensions returns
 // true while the sheet has had none (layout.js:266-268) and the one that

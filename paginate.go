@@ -327,6 +327,18 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 	// This is why a container taller than a whole content area is not a
 	// refusal: it comes out one per sheet, overflowing, exactly as pdf.js
 	// draws it.
+	//
+	// Unless the author said it may be cut. A positioned container carrying
+	// `<keep intact="none"/>` is sliced across the sheets instead of being put
+	// down overflowing — see [placer.cuttable] — and the free pass does not
+	// reach it, because the pass exists so that something too tall for any
+	// sheet still lands somewhere and a container that can be cut does not
+	// need it.
+	if !fits(p.y+h, lv.bottom) && p.cuttable(kid) {
+		if done, cut := p.cut(kid, lv, h); cut {
+			return done
+		}
+	}
 	for !p.free && !fits(p.y+h, lv.bottom) {
 		if !p.advance(p.overflowTo(kid)) {
 			p.blocked = noNextPage
