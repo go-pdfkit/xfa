@@ -1585,8 +1585,16 @@ func readPdfium(name string) (map[string][]pdfiumBox, int, error) {
 // template did not name, which contributes nothing to [FormNode.Path] either.
 // The two are the same walk written differently, so this is a rewrite and not
 // a guess.
+//
+// A dot INSIDE a name is escaped, which is why the steps are cut by
+// [somSteps] and not by strings.Split. 35 of the 559 dumped forms name an
+// element that way — "ArtifactedHeader[0].A\.Original[0]" — and splitting on
+// every dot put a backslash in the rewritten path, so the key matched nothing
+// this package emits and 592 leaves were paired with nothing at all. The
+// agreement rates were never wrong, both sides being unpaired, but they could
+// not see those boxes.
 func somPath(som string) string {
-	steps := strings.Split(som, ".")
+	steps := somSteps(som)
 	var out []string
 	for _, s := range steps {
 		name, idx := s, 0
@@ -1603,6 +1611,27 @@ func somPath(som string) string {
 		out = append(out, name)
 	}
 	return strings.Join(out, ".")
+}
+
+// somSteps cuts a SOM expression at its UNESCAPED dots. pdfium writes a name
+// holding a dot with a backslash before it (CXFA_Object::GetSOMExpression),
+// and the backslash is not part of the name.
+func somSteps(som string) []string {
+	var out []string
+	var cur strings.Builder
+	for i := 0; i < len(som); i++ {
+		switch {
+		case som[i] == '\\' && i+1 < len(som):
+			i++
+			cur.WriteByte(som[i])
+		case som[i] == '.':
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(som[i])
+		}
+	}
+	return append(out, cur.String())
 }
 
 // TestIntraLineAgainstPdfium checks where a box went ACROSS a line against a

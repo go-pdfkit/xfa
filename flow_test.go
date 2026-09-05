@@ -481,3 +481,44 @@ func TestInsideAContainerThatMovesWholeAStackStillStops(t *testing.T) {
 		"f.G.B: a tb layout stacks its children, and the height of the one above it is not computed: " +
 			"its margin is not written in lengths"})
 }
+
+// TestAWrittenHeightIsACeilingNotAFloor pins the rule the pdfium oracle
+// settled: a container that writes an h is that tall, and what it holds does
+// not stretch it. pdf.js takes the max of the two (template.js:5222) and this
+// package followed that until the oracle was asked; pdfium's
+// CalculateContainerSpecifiedSize turns the auto-size off outright
+// (cxfa_contentlayoutprocessor.cpp:97-137).
+func TestAWrittenHeightIsACeilingNotAFloor(t *testing.T) {
+	for _, tc := range []struct {
+		what string
+		body string
+		want []string
+	}{
+		{"content taller than the written height does not stretch it",
+			// The box holds a child reaching 24 points and writes 12, so the
+			// draw that follows it begins at 12 and not at 24.
+			`<subform name="Box" h="12pt"><draw name="A" y="12pt" w="1pt" h="12pt"/></subform>
+			 <draw name="After" w="1pt" h="3pt"/>`,
+			[]string{"draw f.Box.A 0,12 1x12", "draw f.After 0,12 1x3"}},
+		{"content shorter than the written height does not shrink it",
+			`<subform name="Box" h="30pt"><draw name="A" w="1pt" h="4pt"/></subform>
+			 <draw name="After" w="1pt" h="3pt"/>`,
+			[]string{"draw f.Box.A 0,0 1x4", "draw f.After 0,30 1x3"}},
+		{"a height written as nought is no height, and the content decides",
+			// pdfium reads a height only above kXFALayoutPrecision
+			// (cxfa_contentlayoutprocessor.h:28), so this stacks as if the
+			// attribute were absent.
+			`<subform name="Box" h="0pt"><draw name="A" w="1pt" h="7pt"/></subform>
+			 <draw name="After" w="1pt" h="3pt"/>`,
+			[]string{"draw f.Box.A 0,0 1x7", "draw f.After 0,7 1x3"}},
+		{"a written height with a margin is still the whole of it",
+			`<subform name="Box" h="12pt"><margin topInset="5pt" bottomInset="5pt"/>
+			   <draw name="A" w="1pt" h="20pt"/></subform>
+			 <draw name="After" w="1pt" h="3pt"/>`,
+			[]string{"draw f.Box.A 0,5 1x20", "draw f.After 0,12 1x3"}},
+	} {
+		if got := laid(laidOut(t, page(`w="500pt" h="500pt"`, tc.body))); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+			t.Errorf("%s:\n  got  %v\n  want %v", tc.what, got, tc.want)
+		}
+	}
+}
