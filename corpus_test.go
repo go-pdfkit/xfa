@@ -1959,16 +1959,39 @@ func readPdfiumSheets(name string) ([]pdfiumSheet, error) {
 // opened on is [placer.sheetAreas] here and GetPage(i)'s form node there, and
 // neither is read off the geometry being judged.
 //
-// # What it cannot see
+// # Lining sheets up by INDEX cannot attribute what it finds
 //
-// Sheets are lined up by INDEX, and only as far as both sides have one. Nine
-// forms disagree with pdfium on the NUMBER of sheets, which leaves 89 sheets
-// compared against nothing: those are a pagination disagreement and this is
-// not the instrument for one.
+// v0.20.0 read the page-area half by index and reported ten sheets across
+// three forms — us-uscis__g-1055 6, i-956g 3, i-956 1 — and that number was
+// read as ten wrong CHOICES. It is not one. A sheet the other side opens and
+// this one does not shifts every sheet after it by one, so a page turn missed
+// in the MIDDLE of a run is reported as a wrong page area on every sheet up to
+// the next boundary. The three forms it names are exactly the three whose
+// sheet counts disagree most.
 //
-// A page area both sides agree on may still be a DIFFERENT OCCURRENCE of it —
+// So the sequences are compared by ORDER as well, which separates the two:
+//
+//   - is every page area this opens one pdfium opens, in the same order? That
+//     is [subsequence], and where it holds there is no wrong choice anywhere
+//     in the form however far apart the counts are;
+//   - where NEITHER sequence is a subsequence of the other, a page area really
+//     was chosen that pdfium does not choose there. That count is the one this
+//     test exists to keep at nought.
+//
+// Measured over the 559 forms pdfium lays out: nine sequences move at all, and
+// on every one of them one side's is a subsequence of the other's. Zero sheets
+// of the corpus are opened on a page area pdfium does not choose. What the ten
+// index mismatches are is 48 sheets pdfium opens that this does not — 44 of
+// them on those three forms — and 41 this opens that pdfium does not, all on
+// the three forms whose own scripts pdfium runs and this does not (#18).
+//
+// # What neither half can see
+//
+// A page area both sides name may still be a DIFFERENT OCCURRENCE of it —
 // pdfium names the page area of the template, as this does, and a page set
-// that runs twice reaches the same names again.
+// that runs twice reaches the same names again. The order-aligned half is
+// blind to that in the same way, and it is blind to WHERE a missing sheet
+// belongs: it says how many, not which.
 func TestSheetsAgainstPdfium(t *testing.T) {
 	dir, dumps := os.Getenv("XFACORPUS"), os.Getenv("XFAPDFIUM")
 	if dir == "" || dumps == "" {
@@ -1986,6 +2009,8 @@ func TestSheetsAgainstPdfium(t *testing.T) {
 	var countDiff, unpaired int
 	var worst float64
 	var sizeBad, areaBad []string
+	var moved, weMiss, theyMiss int
+	var chose, orderBad []string
 
 	for _, name := range names {
 		form := filepath.Base(strings.TrimSuffix(name, ".template.xml"))
@@ -2051,6 +2076,37 @@ func TestSheetsAgainstPdfium(t *testing.T) {
 			areaBad = append(areaBad, fmt.Sprintf("%s: %d of %d sheets, %s",
 				form, badArea, len(l.Pages), firstArea))
 		}
+
+		// The same two sequences, aligned by ORDER rather than by index.
+		mine := make([]string, len(l.Pages))
+		for i := range mine {
+			if i < len(p.sheetAreas) {
+				mine[i] = p.sheetAreas[i].Name
+			}
+		}
+		yours := make([]string, len(theirs))
+		for i, s := range theirs {
+			yours[i] = s.pageArea
+		}
+		switch {
+		case subsequence(mine, yours) && len(mine) == len(yours):
+			// The same sequence. Nothing to say.
+		case subsequence(mine, yours):
+			moved++
+			weMiss += len(yours) - len(mine)
+			orderBad = append(orderBad, fmt.Sprintf(
+				"%s: ours %d sheets against pdfium's %d, and every one of ours is a page area pdfium opens there too",
+				form, len(mine), len(yours)))
+		case subsequence(yours, mine):
+			moved++
+			theyMiss += len(mine) - len(yours)
+			orderBad = append(orderBad, fmt.Sprintf(
+				"%s: ours %d sheets against pdfium's %d, and every one of PDFIUM's is a page area this opens there too",
+				form, len(mine), len(yours)))
+		default:
+			moved++
+			chose = append(chose, fmt.Sprintf("%s: ours %v against pdfium %v", form, mine, yours))
+		}
 	}
 
 	if sheets == 0 {
@@ -2069,5 +2125,68 @@ func TestSheetsAgainstPdfium(t *testing.T) {
 	}
 	for _, s := range areaBad {
 		t.Logf("  pagearea:  %s", s)
+	}
+	t.Logf("aligned by ORDER instead: %d forms whose sequence moves at all, "+
+		"%d sheets pdfium opens that this does not, %d this opens that pdfium does not",
+		moved, weMiss, theyMiss)
+	t.Logf("sheets opened on a page area pdfium does not CHOOSE there: %d forms", len(chose))
+	for _, s := range orderBad {
+		t.Logf("  order:     %s", s)
+	}
+	for _, s := range chose {
+		t.Errorf("  CHOSE:     %s", s)
+	}
+}
+
+// subsequence says every entry of a appears in b, in order: a page-area
+// sequence that is a subsequence of another chooses nothing the other does not
+// choose, however many sheets apart the two are.
+//
+// Greedy is exact for this question and for no other. Taking the FIRST match
+// of each entry can never lose: any later match leaves a suffix of b that is a
+// suffix of the one the first match leaves, so anything the later choice can
+// still match the earlier one can too.
+func subsequence(a, b []string) bool {
+	j := 0
+	for _, x := range a {
+		for j < len(b) && b[j] != x {
+			j++
+		}
+		if j == len(b) {
+			return false
+		}
+		j++
+	}
+	return true
+}
+
+// TestSubsequenceIsTheQuestionItLooksLike checks [subsequence] on the shapes
+// the corpus actually makes, and on the one greedy is asked to get right: a
+// repeated name where the first match is not the one a later entry needs.
+func TestSubsequenceIsTheQuestionItLooksLike(t *testing.T) {
+	for _, c := range []struct {
+		why  string
+		a, b []string
+		want bool
+	}{
+		{"the empty sequence is a subsequence of anything", nil, []string{"P2"}, true},
+		{"nothing is a subsequence of the empty one", []string{"P2"}, nil, false},
+		{"equal sequences", []string{"P2", "P3"}, []string{"P2", "P3"}, true},
+		{"a sheet missed in the middle of a run — us-uscis__i-956's shape",
+			[]string{"P2", "P2", "P3"}, []string{"P2", "P2", "P2", "P2", "P3"}, true},
+		{"a sheet missed at the head — us-uscis__g-1055's shape",
+			[]string{"P2", "P3"}, []string{"P2", "P4", "P3"}, true},
+		{"the same names in the wrong ORDER is not a subsequence, which is the " +
+			"case this exists to catch",
+			[]string{"P3", "P2"}, []string{"P2", "P3"}, false},
+		{"greedy must not strand a later entry: the first P3 is spent before " +
+			"the P4 that follows it",
+			[]string{"P3", "P4"}, []string{"P3", "P4", "P3"}, true},
+		{"one entry too many of a repeated name",
+			[]string{"P3", "P3", "P3"}, []string{"P3", "P3"}, false},
+	} {
+		if got := subsequence(c.a, c.b); got != c.want {
+			t.Errorf("subsequence(%v, %v) = %v, want %v: %s", c.a, c.b, got, c.want, c.why)
+		}
 	}
 }
