@@ -1876,3 +1876,198 @@ func TestIntraLineAgainstPdfium(t *testing.T) {
 		t.Logf("  %s", w)
 	}
 }
+
+// A pdfiumSheet is one sheet as pdfium's probe reports it: the size of the
+// paper, and the page area the sheet was opened on.
+//
+// The probe writes both from CXFA_LayoutProcessor::GetPage(i) — the size from
+// GetPageSize, the page area's name from the view layout item's form node — so
+// a sheet's page area is known even where that page area draws nothing at all.
+// us-uscis__g-1055 has 91 such sheets, and reading the page area off the
+// furniture on the paper would call every one of them unattributed.
+type pdfiumSheet struct {
+	w, h     float64
+	pageArea string
+}
+
+// readPdfiumSheets reads the sheets out of one form's dump.
+//
+// The lines are "#page <i> <w> <h>" and "#pagearea <i> <class> <name>", which
+// the probe writes before the boxes of that sheet.
+func readPdfiumSheets(name string) ([]pdfiumSheet, error) {
+	b, err := os.ReadFile(name)
+	if err != nil {
+		return nil, err
+	}
+	byIndex := map[int]pdfiumSheet{}
+	most := -1
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) != 4 {
+			continue
+		}
+		i, err := strconv.Atoi(f[1])
+		if err != nil || i < 0 {
+			continue
+		}
+		s := byIndex[i]
+		switch f[0] {
+		case "#page":
+			s.w, _ = strconv.ParseFloat(f[2], 64)
+			s.h, _ = strconv.ParseFloat(f[3], 64)
+		case "#pagearea":
+			s.pageArea = f[3]
+		default:
+			continue
+		}
+		byIndex[i] = s
+		if i > most {
+			most = i
+		}
+	}
+	out := make([]pdfiumSheet, most+1)
+	for i := range out {
+		out[i] = byIndex[i]
+	}
+	return out, nil
+}
+
+// TestSheetsAgainstPdfium checks the PAPER against pdfium: how big each sheet
+// is, and which page area it was opened on.
+//
+//	XFACORPUS=/path/to/parts XFAPDFIUM=/path/to/dumps go test -run SheetsAgainstPdfium -v
+//
+// # Why this exists, and what it caught the day it was written
+//
+// Every other judge here compares a box: its x, and the sheet it landed on
+// with its y. None of them compares the sheet ITSELF, and that is a whole
+// class of error they cannot see. v0.18.0 found six forms laying every sheet
+// but the first on a landscape page area 612 pt tall where the portrait one is
+// 792, fixed it, moved 378 leaves onto correctly oriented sheets — and not one
+// number in this file moved by a unit, because a leaf at the same (sheet, x,
+// y) on a 612x792 sheet and on a 792x612 one counted as full agreement.
+//
+// # The size is the weak half of the question
+//
+// A sheet's size is a proxy for its page area and a poor one: 528 of the 559
+// forms pdfium lays out give every page area of a form the same medium, so
+// choosing the wrong one leaves the size right. Where the media DO differ the
+// size sees it — that is what v0.18.0's six forms were — but that is 31 forms
+// of 559.
+//
+// So this asks the question outright as well. Which page area a sheet was
+// opened on is [placer.sheetAreas] here and GetPage(i)'s form node there, and
+// neither is read off the geometry being judged.
+//
+// # What it cannot see
+//
+// Sheets are lined up by INDEX, and only as far as both sides have one. Nine
+// forms disagree with pdfium on the NUMBER of sheets, which leaves 89 sheets
+// compared against nothing: those are a pagination disagreement and this is
+// not the instrument for one.
+//
+// A page area both sides agree on may still be a DIFFERENT OCCURRENCE of it —
+// pdfium names the page area of the template, as this does, and a page set
+// that runs twice reaches the same names again.
+func TestSheetsAgainstPdfium(t *testing.T) {
+	dir, dumps := os.Getenv("XFACORPUS"), os.Getenv("XFAPDFIUM")
+	if dir == "" || dumps == "" {
+		t.Skip("no XFACORPUS or no XFAPDFIUM")
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*.template.xml"))
+	if err != nil || len(names) == 0 {
+		t.Skipf("no templates in %s", dir)
+	}
+	sort.Strings(names)
+
+	var forms, noDump int
+	var sheets, sameSize, sameArea int
+	var swapped int
+	var countDiff, unpaired int
+	var worst float64
+	var sizeBad, areaBad []string
+
+	for _, name := range names {
+		form := filepath.Base(strings.TrimSuffix(name, ".template.xml"))
+		theirs, err := readPdfiumSheets(filepath.Join(dumps, form+".tsv"))
+		if err != nil {
+			noDump++
+			continue
+		}
+		tmpl := readNode(t, name, true)
+		if tmpl == nil {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".template.xml")
+		f := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
+		l, p := placeForm(f, nil)
+		forms++
+
+		if len(l.Pages) != len(theirs) {
+			countDiff++
+			d := len(l.Pages) - len(theirs)
+			if d < 0 {
+				d = -d
+			}
+			unpaired += d
+		}
+		var badSize, badArea int
+		var firstArea string
+		for i := 0; i < len(l.Pages) && i < len(theirs); i++ {
+			sheets++
+			ours, them := l.Pages[i], theirs[i]
+			// A tenth of a point. Both sides write four decimals of a float
+			// arrived at differently, and seven forms of the corpus differ in
+			// the fourth — 1008.0 against 1008.0001 — which is not a
+			// disagreement about paper.
+			dw := math.Abs(float64(ours.Width) - them.w)
+			dh := math.Abs(float64(ours.Height) - them.h)
+			if math.Max(dw, dh) < 0.1 {
+				sameSize++
+			} else {
+				badSize++
+				if math.Max(dw, dh) > worst {
+					worst = math.Max(dw, dh)
+				}
+				if math.Abs(float64(ours.Width)-them.h) < 0.1 &&
+					math.Abs(float64(ours.Height)-them.w) < 0.1 {
+					swapped++
+				}
+			}
+			if i < len(p.sheetAreas) && p.sheetAreas[i].Name == them.pageArea {
+				sameArea++
+			} else {
+				badArea++
+				if firstArea == "" && i < len(p.sheetAreas) {
+					firstArea = fmt.Sprintf("sheet %d on %s where pdfium says %s",
+						i, p.sheetAreas[i].Name, them.pageArea)
+				}
+			}
+		}
+		if badSize > 0 {
+			sizeBad = append(sizeBad, fmt.Sprintf("%s: %d of %d sheets", form, badSize, len(l.Pages)))
+		}
+		if badArea > 0 {
+			areaBad = append(areaBad, fmt.Sprintf("%s: %d of %d sheets, %s",
+				form, badArea, len(l.Pages), firstArea))
+		}
+	}
+
+	if sheets == 0 {
+		t.Skip("no sheet of any form could be lined up against a dump")
+	}
+	t.Logf("%d forms judged, %d with no dump", forms, noDump)
+	t.Logf("%d sheets lined up by index; %d forms disagree on the NUMBER of sheets, "+
+		"leaving %d sheets compared against nothing", sheets, countDiff, unpaired)
+	t.Logf("the same SIZE as pdfium: %d/%d (%.2f%%), of the rest %d have the two dimensions swapped, "+
+		"and the largest disagreement in either is %.4f pt",
+		sameSize, sheets, 100*float64(sameSize)/float64(sheets), swapped, worst)
+	t.Logf("opened on the same PAGE AREA: %d/%d (%.2f%%)",
+		sameArea, sheets, 100*float64(sameArea)/float64(sheets))
+	for _, s := range sizeBad {
+		t.Logf("  size:      %s", s)
+	}
+	for _, s := range areaBad {
+		t.Logf("  pagearea:  %s", s)
+	}
+}

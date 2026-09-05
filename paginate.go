@@ -600,6 +600,7 @@ func (p *placer) openArea(area *FormNode, slot int, fresh bool) {
 func (p *placer) startPage(area *FormNode) {
 	page := Page{}
 	page.Width, page.Height = pageSize(area.Template)
+	p.sheetAreas = append(p.sheetAreas, area)
 	for _, c := range contentAreas(area) {
 		page.Areas = append(page.Areas, contentRect(c))
 	}
