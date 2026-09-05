@@ -203,15 +203,41 @@ func (p *placer) measure(n *FormNode, wide, colW Measure) (Measure, string) {
 	if err != nil {
 		return 0, fmt.Sprintf("its height is written as h=%q, which is not a length", n.Template.Get("h"))
 	}
-	if !ok {
-		own = 0
+	// pdfium disables the auto-size only for a height ABOVE
+	// kXFALayoutPrecision (0.0005pt, cxfa_contentlayoutprocessor.h:28), so a
+	// height written as nought is no height and the content decides. No
+	// container of the 560-form corpus writes one, which is why this is a
+	// guard and not a measured claim.
+	if own <= 0 {
+		ok = false
 	}
-	// pdf.js: Math.max(this[$extra].height + marginV, this.h || 0)
-	// (template.js:5222). A container is as tall as what it holds even where
-	// the template writes a height, which is why holding a thing of unknown
-	// height leaves the container's own height unknown too rather than falling
-	// back on what is written.
-	return max(content+in.vertical(), own), ""
+	// A WRITTEN height is the height. It is a ceiling and not a floor: what
+	// the container holds does not grow it.
+	//
+	// pdf.js takes the other reading — Math.max(this[$extra].height + marginV,
+	// this.h || 0) (template.js:5222) — and this package followed it until the
+	// oracle was asked. pdfium decides it in two steps.
+	// CalculateContainerSpecifiedSize (cxfa_contentlayoutprocessor.cpp:97-137)
+	// turns bContainerHeightAutoSize off as soon as a subform writes an h above
+	// kXFALayoutPrecision, and CalculateContainerComponentSizeFromContentSize
+	// (:140-184) then leaves componentSize.height at that written height,
+	// never reading fContentCalculatedHeight at all.
+	//
+	// Measured over the corpus against pdfium, following pdfium: leaves
+	// agreeing on sheet AND y 161453/177676 -> 161937/177676, forms agreeing on
+	// every one of them 395/559 -> 403/559, no form worse and not one x moved.
+	// ca-cra__rc243-fill-26e's Detail2 row is the case in the small: it writes
+	// h="4.233mm" and holds children reaching 8.466mm, and pdfium puts the row
+	// that follows at 607.0961 — the written 11.9991 below the row above, to
+	// the point.
+	//
+	// The content height is still computed first, and a reason it could not be
+	// still wins, so a container holding something unmeasurable stays
+	// unmeasurable rather than falling back on what is written.
+	if ok {
+		return own, ""
+	}
+	return content + in.vertical(), ""
 }
 
 // innerWide is how much horizontal room a container gives what it holds.
