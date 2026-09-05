@@ -176,6 +176,14 @@ var flowLayouts = map[string]bool{
 // unplaced where it fits no page at all. A container that WRAPS is split at a
 // line boundary and never inside one.
 //
+// A POSITIONED container is the one exception, and only where its author asked
+// for it. `<keep intact="none"/>` on one is a permission pdfium reads and
+// pdf.js's clause ORDER cannot reach, and a container carrying it is laid out
+// whole and then CUT: its children keep the y the template wrote for them,
+// less however much of the container is on the sheets before. See
+// [placer.cuttable], which is a different question from [placer.splittable] and
+// answered by a different mechanism.
+//
 // # What it deliberately does not do, and reports instead
 //
 //   - rl-row, which fills a ROW from the right. That needs the row's own
