@@ -548,7 +548,7 @@ func (p *placer) advance(to *breakTo) bool {
 		}
 	case to != nil && to.area != nil:
 		slot = to.index
-		if p.pager.use(to.area) {
+		if p.pager.reach(to.area, to.named) {
 			p.pager.number++
 			p.openArea(to.area, slot, true)
 			return true

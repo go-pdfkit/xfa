@@ -403,13 +403,38 @@ func TestABreakBeforeTheWholeFormWithNowhereToGoLeavesNothingBehind(t *testing.T
 	same(t, "what was left off", notLaid(l), []string{"f.A: " + noNextPage, "f.B: " + noNextPage})
 }
 
-func TestABreakToASheetThatIsSpentTakesTheSequenceInstead(t *testing.T) {
+func TestABreakToAContentAreaOfASpentPageAreaStillReachesIt(t *testing.T) {
 	// P1 offers two content areas and may make one sheet; P2 offers one and
 	// may make any number. The body fills both of P1's, moves to P2, and then
-	// a break names P1's SECOND content area — which cannot be gone to,
-	// because P1 is spent. The sequence takes over, and the content area the
-	// break asked for does not exist on the sheet it lands on.
+	// a break names P1's SECOND content area.
+	//
+	// P1's <occur> is spent, and the break reaches it anyway on a fresh sheet
+	// of P1 — at 100,200, which is the content area it asked for. A content
+	// area target resolves to the page area holding it and goes through the
+	// same door as a page area target ([pager.reach]); pdfium passes both to
+	// GetNextAvailPageArea together and matches on the page area
+	// (cxfa_viewlayoutprocessor.cpp:1582-1607).
 	l := laidOut(t, sheets(`>`+twoAreas("P1", `<occur max="1"/>`)+
+		`<pageArea name="P2"><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea x="7pt" y="0pt" w="500pt" h="20pt"/></pageArea>`, `
+	  <subform name="F" layout="tb">`+bricks(3, "15")+`</subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="contentArea" target="P1.Low" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.F.A0 0,0 1x15",
+		"0: draw f.F.A1 100,200 1x15",
+		"1: draw f.F.A2 7,0 1x15",
+		"2: draw f.S.B 100,200 1x5"})
+}
+
+func TestASheetTheSequenceFallsBackOnMayNotHaveTheContentAreaAsked(t *testing.T) {
+	// The same form, with the page SET capped at one run. Now the break
+	// cannot reach P1 — a spent page set is not started again, whoever names
+	// what is inside it ([pager.reach]) — so the sequence answers instead, and
+	// it answers P2, which has ONE content area where the break asked for the
+	// second. The slot is dropped rather than carried onto a sheet that has no
+	// such area.
+	l := laidOut(t, sheets(`><occur max="1"/>`+twoAreas("P1", `<occur max="1"/>`)+
 		`<pageArea name="P2"><medium long="1000pt" short="1000pt"/>`+
 		`<contentArea x="7pt" y="0pt" w="500pt" h="20pt"/></pageArea>`, `
 	  <subform name="F" layout="tb">`+bricks(3, "15")+`</subform>

@@ -135,8 +135,10 @@
 // Measured over the same 560 packages:
 //
 //	81 750 fields in the body of the expanded forms
-//	81 734 placed, 156 010 draws with them, on 3 090 sheets
-//	    16 sit under a page area no sheet of the form ever is
+//	81 750 placed, 151 323 draws with them, on 3 088 sheets
+//	     0 left over: every field and every draw of the body reaches the paper
+//	    12 elements of the page areas' own furniture are drawn on no sheet,
+//	       because no sheet of the form is that page area
 //
 // # What checks it
 //
