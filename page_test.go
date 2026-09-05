@@ -273,10 +273,14 @@ func TestWhatABreakDoes(t *testing.T) {
 	}
 }
 
-func TestASpentPageAreaIsNotReachedByNamingIt(t *testing.T) {
-	// P2 may be used once and the break names it twice. The second time it is
-	// no longer usable, so the sequence takes over from where it is rather
-	// than going where the break said.
+func TestABreakThatNamesASpentPageAreaStartsItsPageSetAgain(t *testing.T) {
+	// P2 may be used once and the break names it twice. The second time its
+	// <occur> is spent — and the break still reaches it, because a page area's
+	// max bounds how often the SEQUENCE runs into it and not how often a break
+	// may ask for it by name. See [pager.reach], where pdfium is read.
+	//
+	// P3 is here to show what is NOT taken: the sequence's answer, which is
+	// what this package gave before the rule was read off pdfium's trace.
 	l := laidOut(t, sheets(`>`+sheet("P1", "", "100", "")+
 		`<pageArea name="P2"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
 		`<draw name="Two" w="1pt" h="1pt"/><contentArea w="500pt" h="100pt"/></pageArea>`+
@@ -289,7 +293,77 @@ func TestASpentPageAreaIsNotReachedByNamingIt(t *testing.T) {
 	same(t, "the sheets", byPage(l), []string{
 		"0: draw f.F.A 0,0 1x5",
 		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.B 0,0 1x5",
-		"2: draw f.T.C 0,0 1x5"})
+		"2: draw f.P2.Two 0,0 1x1", "2: draw f.T.C 0,0 1x5"})
+}
+
+func TestABreakThatNamesNoPageAreaTakesTheNextOneWhenTheOneInHandIsSpent(t *testing.T) {
+	// The other half of the same rule, and the one that keeps a max meaning
+	// something. <breakBefore targetType="pageArea" startNew="1"/> writes no
+	// target, so the page area it is handed is only the one in hand standing
+	// in for a target ([pager.fire]); pdfium's scan then accepts ANY page area
+	// (cxfa_viewlayoutprocessor.cpp:1582-1607) and the sequence moves on to
+	// P2. Two thousand of the corpus's two and a half thousand breaks are
+	// written this way.
+	l := laidOut(t, sheets(`>`+
+		`<pageArea name="P1"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<draw name="One" w="1pt" h="1pt"/><contentArea w="500pt" h="100pt"/></pageArea>`+
+		`<pageArea name="P2"><medium long="1000pt" short="1000pt"/>`+
+		`<draw name="Two" w="1pt" h="1pt"/><contentArea w="500pt" h="100pt"/></pageArea>`, `
+	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="pageArea" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.F.A 0,0 1x5",
+		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.B 0,0 1x5"})
+}
+
+func TestABreakCannotStartAgainAPageAreaThatIsInNoPageSet(t *testing.T) {
+	// A target is resolved by id anywhere in the form ([pager.resolve]), so a
+	// <pageArea> written outside every <pageSet> can be named and gone to —
+	// and has no page set to start again once its own <occur> is spent. The
+	// second break is refused and there is nowhere left to go, which is the
+	// same answer [pager.first] already gives such a page area at the top of
+	// the form.
+	//
+	// The stray page area's content area begins at 42pt, so which sheet is
+	// which can be read off the body's x.
+	l := laidOut(t, `<template><subform name="f" layout="tb"><pageSet>`+
+		`<pageArea name="P1"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<contentArea w="500pt" h="100pt"/></pageArea></pageSet>`+
+		`<subform name="Hold"><pageArea name="Stray" id="sx"><occur max="1"/>`+
+		`<medium long="1000pt" short="1000pt"/>`+
+		`<contentArea x="42pt" w="500pt" h="100pt"/></pageArea></subform>`+
+		`<subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>`+
+		`<subform name="S" layout="tb">`+
+		`<breakBefore targetType="pageArea" target="#sx" startNew="1"/>`+
+		`<draw name="B" w="1pt" h="5pt"/></subform>`+
+		`<subform name="T" layout="tb">`+
+		`<breakBefore targetType="pageArea" target="#sx" startNew="1"/>`+
+		`<draw name="C" w="1pt" h="5pt"/></subform>`+
+		`</subform></template>`)
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.F.A 0,0 1x5",
+		"1: draw f.S.B 42,0 1x5"})
+	same(t, "what was left", notLaid(l), []string{
+		"f.T.C: the form ran out of pages before it: its page set gives no page after the last one"})
+}
+
+func TestABreakCannotStartASpentPageSetAgain(t *testing.T) {
+	// A page SET's <occur> is the bound a page area's is not: pdfium reads it
+	// in FindPageAreaFromPageSet_Ordered itself
+	// (cxfa_viewlayoutprocessor.cpp:1329-1341), which is the function every
+	// route to a named target goes through. The set here may run once, so the
+	// second break cannot start it again and the form ends.
+	l := laidOut(t, sheets(`><occur max="1"/>`+
+		`<pageArea name="P1"><occur max="1"/><medium long="1000pt" short="1000pt"/>`+
+		`<draw name="One" w="1pt" h="1pt"/><contentArea w="500pt" h="100pt"/></pageArea>`, `
+	  <subform name="F" layout="tb"><draw name="A" w="1pt" h="5pt"/></subform>
+	  <subform name="S" layout="tb"><breakBefore targetType="pageArea" target="P1" startNew="1"/>
+	    <draw name="B" w="1pt" h="5pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.F.A 0,0 1x5"})
+	same(t, "what was left", notLaid(l), []string{
+		"f.S.B: the form ran out of pages before it: its page set gives no page after the last one"})
 }
 
 func TestAPageSetIsStartedAgainAtMostOncePerSheetAsked(t *testing.T) {

@@ -592,7 +592,14 @@ func targetTypeOf(v string) string {
 // A breakTo says where a break sends the layout: which page area, which of its
 // content areas, and whether a fresh sheet is started whatever.
 type breakTo struct {
-	area  *FormNode
+	area *FormNode
+	// named says the template NAMED this page area, rather than it being the
+	// page area in hand standing in for a target the break did not write. It
+	// is what tells [pager.reach] from [pager.use]: pdfium keeps looking for a
+	// page area a break named and takes the next one in the sequence where it
+	// named none (cxfa_viewlayoutprocessor.cpp:1582-1607, whose scan matches
+	// pTargetPageArea or accepts anything when it is null).
+	named bool
 	index int
 	page  bool
 }
@@ -623,12 +630,13 @@ func (p *pager) fire(root *FormNode, b breakSpec, cur *FormNode, slot int) (brea
 		}
 		switch {
 		case b.startNew:
+			named := target != nil
 			if target == nil {
 				target = cur
 			}
-			return breakTo{area: target, page: true}, true
+			return breakTo{area: target, named: named, page: true}, true
 		case target != nil && target != cur:
-			return breakTo{area: target, page: true}, true
+			return breakTo{area: target, named: true, page: true}, true
 		}
 		return breakTo{}, false
 	}
@@ -645,12 +653,12 @@ func (p *pager) fire(root *FormNode, b breakSpec, cur *FormNode, slot int) (brea
 		if target == cur && slot < idx {
 			return breakTo{index: idx}, true
 		}
-		return breakTo{area: target, index: idx, page: true}, true
+		return breakTo{area: target, named: true, index: idx, page: true}, true
 	case target != nil && !(target == cur && idx == slot):
 		if target == cur {
 			return breakTo{index: idx}, true
 		}
-		return breakTo{area: target, index: idx, page: true}, true
+		return breakTo{area: target, named: true, index: idx, page: true}, true
 	}
 	return breakTo{}, false
 }
@@ -663,5 +671,68 @@ func (p *pager) use(a *FormNode) bool {
 		return false
 	}
 	p.used[a]++
+	return true
+}
+
+// reach takes a page area a break has NAMED, starting its page set again where
+// that page area's own <occur max> is spent.
+//
+// # A page area's max does not bound how often a break may name it
+//
+// pdfium reads a page area's <occur max> in exactly one place: the branch of
+// GetNextAvailPageArea that REPEATS the page area in hand
+// (cxfa_viewlayoutprocessor.cpp:1552-1578). Every other route to a page area
+// runs through FindPageAreaFromPageSet_Ordered, which scans the siblings after
+// the page area in hand for the TARGET and, finding none, starts the page set
+// again from its first child and takes the target there (:1582-1607). That
+// function never reads a page area's occur at all; the only max it reads is
+// the page SET's (:1329-1341).
+//
+// So the max bounds how often the SEQUENCE runs into a page area, not how
+// often a break may ask for it by name. This package already holds the other
+// half of the rule — starting a page set again forgets the counts of the page
+// areas below it, see [pager.cleanKids] — and this is that same restart, asked
+// for by a target rather than by running off the end of the set.
+//
+// pdfium reaches the target by scanning forward where it lies after the page
+// area in hand, and by the restart otherwise; only the restart counts against
+// the page set's own <occur>. This takes the restart for both, which no form
+// can tell apart: one page set of the corpus writes an <occur> at all and it
+// writes no max, so nothing reads the count either way.
+//
+// Six forms turn on it, all of them a portrait page area with max="1" and a
+// landscape one beside it: ca-cra t2042, t2121 and t2125, each in two years.
+// Their body subforms carry <breakBefore targetType="pageArea" target="Pg1">,
+// and refusing the target dropped every sheet after the first onto the
+// landscape page area — 612 points tall instead of 792 — which put 403 leaves
+// off the paper.
+func (p *pager) reach(a *FormNode, named bool) bool {
+	if p.use(a) {
+		return true
+	}
+	if !named {
+		// The break named no page area and this one is only the page area in
+		// hand standing in for it. pdfium's scan accepts any page area when it
+		// carries no target, so what follows a refusal is the next one in the
+		// sequence and not this one again.
+		return false
+	}
+	set := p.within[a]
+	if set == nil || !p.setUsable(set) {
+		// A page area named by id can sit outside every page set, and a page
+		// set whose own <occur> is spent is not started again ([pager.afterSet]
+		// says why that one is the end of the form).
+		return false
+	}
+	st := p.state(set)
+	st.numberOfUse++
+	st.pageSetIndex = -1
+	p.cleanKids(set)
+	for i, k := range kidsOfKind(set, "pageArea") {
+		if k == a {
+			st.pageIndex = i
+		}
+	}
+	p.used[a] = 1
 	return true
 }
