@@ -17,18 +17,28 @@ import (
 // (:409-411), and <p>, which is a line break AND a paragraph, so its margins
 // are charged to the height (:490-495).
 //
-// # What a style decides, and what it cannot
+// # What a style decides
 //
-// A style may name a typeface, a size, a weight, a posture and a letter
-// spacing, and in the regime this measures in — no font resolved, see the note
-// on [emWidth] — every one of them is discarded before a glyph is made: the
-// typeface is not found, so FontInfo replaces the whole of xfaFont with the
-// default's (text.js:42-46). It may also name a line height, which the no-font
-// branch of addString never reads (:212-219).
+// A style may name a typeface, a size, a weight, a posture, a letter spacing
+// and a line height, and [textMeasure.pushData] reads all six
+// (xhtml.js:249-307). Where the measurement has no fonts none of them reaches
+// a glyph — the typeface is not found, so FontInfo replaces the whole of
+// xfaFont with the default's (text.js:43-46), and the no-font branch of
+// addString never reads a line height (:208-219). Where it has fonts, all six
+// decide the run's advances and its two line heights.
 //
-// What is left is the margins, which reach the height through addPara, and
-// xfa-spacerun, which decides whether runs of spaces are collapsed and is
-// applied where the text is read rather than here (see [Node.addRun]).
+// The margins reach the height through addPara either way, and xfa-spacerun,
+// which decides whether runs of spaces are collapsed, is applied where the
+// text is read rather than here (see [Node.addRun]).
+//
+// # One deviation, measured before it was kept
+//
+// pdf.js splits the style on ";" and does NOT trim what comes back, so a
+// declaration written as "font-size:8pt; margin-top:2pt" has its second half
+// ignored entirely: the key is " margin-top" and no case matches it. This
+// trims, because a rule that reads a form differently from the reference is
+// worse than a rule that reads it oddly and this one cannot be seen: not one
+// of the corpus's 124 319 style attributes writes a space after a semicolon.
 //
 // # The defect not to copy
 //
@@ -36,8 +46,9 @@ import (
 // such method — it has pushData — so a rich text carrying either throws a
 // TypeError inside pdf.js's own measurement. No unsized leaf of the 560-form
 // corpus writes one. They are measured here as the plain spans they are, which
-// in this regime is what they would come to anyway, since the weight and the
-// posture are discarded with the typeface.
+// with no fonts is what they would come to anyway; with fonts they keep the
+// face outside them rather than turning bold or italic, which is a shortfall
+// against a reference that cannot run at all.
 
 // pushRich adds the glyphs of a rich text's markup, in the order the markup
 // writes them.
@@ -52,7 +63,8 @@ func (t *textMeasure) pushRich(n *Node) {
 		t.addString("\n")
 		return
 	}
-	t.pushPara(paraOfStyle(n.Attr["style"]))
+	f, m, lineHeight := styleFont(n.Attr["style"])
+	t.pushData(f, m, lineHeight)
 	for _, k := range n.Kids {
 		t.pushRich(k)
 	}
@@ -63,7 +75,52 @@ func (t *textMeasure) pushRich(n *Node) {
 		t.addString("\n")
 		t.addPara()
 	}
-	t.popPara()
+	t.popFont()
+}
+
+// styleFont reads everything a span's style says that a measurement reads: the
+// five font values, the paragraph margins, and the line height.
+//
+// It is one pass over the declarations because pdf.js's is (xhtml.js:247-307),
+// and the three answers it fills in are the three arguments of pushData.
+func styleFont(style string) (f xfaFont, m paraMargin, lineHeight Measure) {
+	for _, decl := range strings.Split(style, ";") {
+		key, value, _ := strings.Cut(decl, ":")
+		switch strings.TrimSpace(key) {
+		case "font-family":
+			f.typeface = stripQuotes(strings.TrimSpace(value))
+		case "font-size":
+			f.size = styleMeasure(value)
+		case "font-weight":
+			// Taken as written, whatever it says. pdf.js does not validate a
+			// span's weight or posture against the two values a <font>
+			// element's are held to (xhtml.js:255-260), so "700" is neither
+			// bold nor normal and selects the regular face by falling through
+			// [selectFace].
+			f.weight = strings.TrimSpace(value)
+		case "font-style":
+			f.posture = strings.TrimSpace(value)
+		case "letter-spacing":
+			f.letterSpacing = styleMeasure(value)
+		case "line-height":
+			lineHeight = styleMeasure(value)
+		}
+	}
+	m = paraOfStyle(style)
+	return f, m, lineHeight
+}
+
+// stripQuotes takes the quotes off a CSS font family, which is pdf.js's
+// (utils.js:28-33): a leading quote of either kind means the LAST character is
+// dropped too, whether or not it is one.
+func stripQuotes(s string) string {
+	if len(s) > 0 && (s[0] == '\'' || s[0] == '"') {
+		// slice(1, -1) on a string of one character is the empty string
+		// rather than an error, which is the one place the two languages
+		// would part.
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 // paraOfStyle reads the margins a rich text's style asks for.

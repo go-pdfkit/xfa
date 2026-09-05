@@ -15,7 +15,7 @@ import (
 // measured is a string broken at a width, as "w h broken", so a test can state
 // a whole measurement in one line.
 func measured(text string, maxWidth Measure) string {
-	var t textMeasure
+	t := newTextMeasure(nil, nil, paraMargin{}, 0)
 	t.addString(text)
 	w, h, broken := t.compute(maxWidth)
 	return fmt.Sprintf("%g %g %v", w.Points(), h.Points(), broken)
@@ -103,7 +103,7 @@ func TestACharacterOutsideTheBasicPlaneCountsAsTwo(t *testing.T) {
 func TestAParagraphChargesItsMarginsOnceEach(t *testing.T) {
 	// addPara adds the paragraph's top and bottom to the height ONCE per <p>
 	// (text.js:165-168), whatever the number of lines it comes to.
-	m := newTextMeasure(paraMargin{top: 3, bottom: 2, hasTop: true, hasBottom: true})
+	m := newTextMeasure(nil, nil, paraMargin{top: 3, bottom: 2, hasTop: true, hasBottom: true}, 0)
 	m.addPara()
 	m.addString("ab\ncd")
 	_, h, _ := m.compute(100)
@@ -115,10 +115,10 @@ func TestAParagraphChargesItsMarginsOnceEach(t *testing.T) {
 func TestAParagraphInheritsWhatItsStyleDoesNotWrite(t *testing.T) {
 	// pdf.js writes NaN for an inset a style says nothing about and fills it in
 	// from the paragraph outside (text.js:116-120).
-	m := newTextMeasure(paraMargin{top: 3, bottom: 2, hasTop: true, hasBottom: true})
-	m.pushPara(paraMargin{top: 7, hasTop: true})
+	m := newTextMeasure(nil, nil, paraMargin{top: 3, bottom: 2, hasTop: true, hasBottom: true}, 0)
+	m.pushData(xfaFont{}, paraMargin{top: 7, hasTop: true}, 0)
 	m.addPara()
-	m.popPara()
+	m.popFont()
 	m.addPara()
 	if m.extraHeight != 7+2+3+2 {
 		t.Errorf("the inherited margins came to %v, want 14", m.extraHeight)
