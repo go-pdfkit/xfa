@@ -104,16 +104,37 @@
 // the same numbers. See the note at the top of text.go.
 //
 // How much it decides, measured over the 559 forms pdfium lays out, with the
-// 7 358 leaves whose height comes from their text and which pair unambiguously
-// with pdfium's. The unit is a LINE, because pdfium measures with its own font
-// files and no implementation reproduces another's advances in points:
+// 6 960 leaves whose height comes from their text and which pair unambiguously
+// with pdfium's. The question asked is how many LINES the text came to, which
+// pdfium's probe now reports per leaf; comparing heights would not answer it,
+// because pdfium measures with its own font files and no implementation
+// reproduces another's advances in points:
 //
-//	                          no fonts   with fifteen families off one machine
-//	same line count as pdfium    25.9%   82.5%
-//	one line too many            26.0%    6.9%
-//	two or more too many         38.4%    0.1%
-//	body leaves off the paper     1000      10, of which 9 pdfium puts off too
-//	agreeing on sheet+y         91.29%   92.64%
+//	                                no fonts   with fifteen families off one machine
+//	same number of lines as pdfium     23.2%   76.3%
+//	one line more                      35.2%   20.2%
+//	two or more                        41.5%    2.4%
+//	FEWER lines                         0.1%    1.1%
+//	body leaves off the paper           1000      10, of which 9 pdfium puts off too
+//	agreeing on sheet+y               91.29%   92.64%
+//
+// v0.19.0 published 25.9% and 82.5% in the first row. Those were a PROXY for
+// it — (our height less pdfium's) over OUR line height, bucketed — and the
+// proxy flatters: where the two disagree on the number of lines AND on how
+// tall a line is, the errors can cancel to a height that matches. 1 002 leaves
+// scored as agreeing under the proxy take a different number of lines, fw9's
+// Page4.Col2.F among them: four lines of 9 pt here against pdfium's three of
+// 12, which is 36 pt either way.
+//
+// Where the line counts DO agree the heights still differ, and the whole of
+// that difference is the FIRST line: on 5 372 of 5 373 such leaves the residue
+// is exactly our first line height less pdfium's, and our line height for
+// every line after the first is pdfium's to a hundredth of a point on 1 177 of
+// 1 178. pdfium makes the first line the font size (CXFA_TextParser::
+// GetLineHeight, its bFirst branch); pdf.js makes it the face's line height
+// less its line gap, which for Arial is 1.1172 ems, and this follows pdf.js.
+// The gap is therefore 0.1172 of the size — 1.172 pt at ten points — and it is
+// a disagreement with pdfium rather than a defect against the reference.
 //
 // Where the stack runs off the bottom, the page turns. Which page comes next
 // is a state machine rather than "another of the same" — the page set's

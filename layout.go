@@ -340,12 +340,15 @@ func (p *placer) rejectUnusedPages(root *FormNode) {
 // is still a form of one page.
 func (p *placer) dropEmptyPages() {
 	var keep []Page
+	var areas []*FormNode
 	for i, page := range p.layout.Pages {
 		if p.touched[i] > 0 || len(keep) == 0 && i == len(p.layout.Pages)-1 {
 			keep = append(keep, page)
+			areas = append(areas, p.sheetAreas[i])
 		}
 	}
 	p.layout.Pages = keep
+	p.sheetAreas = areas
 }
 
 // touch records that something of the body was laid out on the sheet in hand.
@@ -429,6 +432,18 @@ type placer struct {
 	// it. A sheet nothing of the body reached is not shipped; see
 	// [placer.dropEmptyPages].
 	touched []int
+	// sheetAreas is the page area each sheet was opened on, one entry per
+	// entry of [Layout.Pages] and kept in step with it by
+	// [placer.dropEmptyPages].
+	//
+	// The sheet's SIZE does not carry this: 528 of the corpus's 559 forms
+	// give every page area of a form the same medium, so a sheet opened on
+	// the wrong one is the right size. Which page area it is has no such
+	// blind spot, and it is the quantity pdfium's probe reads back from
+	// GetPage(i)->GetFormNode() — including on the 91 sheets of
+	// us-uscis__g-1055 whose page area draws no furniture at all, where
+	// nothing on the paper says which one it was.
+	sheetAreas []*FormNode
 	// chain is the run of splittable containers open between the content area
 	// and the element being placed, outermost first, and y is how far down the
 	// current content area the flow has got.
