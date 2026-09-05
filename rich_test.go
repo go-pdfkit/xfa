@@ -27,11 +27,11 @@ func rich(t *testing.T, para, markup string, wide Measure) (Measure, Measure) {
 	if !ok {
 		t.Fatal("the markup was not read")
 	}
-	pm, why := paraOf(draw)
+	pm, lineHeight, why := paraOf(draw)
 	if why != "" {
 		t.Fatal(why)
 	}
-	m := newTextMeasure(pm)
+	m := newTextMeasure(nil, nil, pm, lineHeight)
 	c.push(m)
 	w, h, _ := m.compute(wide)
 	return w, h

@@ -207,8 +207,33 @@ var flowLayouts = map[string]bool{
 // comes back in one list or the other.
 //
 // A nil form, or one with no outermost subform, lays out nothing.
+//
+// It measures text with NO fonts, which is a regime of the reference's own and
+// not a stand-in for one: see the note at the top of text.go, and
+// [PlaceWithFonts] for the other.
 func Place(form *Form) *Layout {
-	l, _ := placeForm(form)
+	l, _ := placeForm(form, nil)
+	return l
+}
+
+// PlaceWithFonts is [Place], measuring the form's text with the given fonts.
+//
+// A template names typefaces and carries none. The document it travelled in
+// carries them, and so does the machine; this package reads neither, which is
+// why the set is an argument. See [FontSet] for how a caller builds one and
+// [FontSet.find] for how a template's name reaches a family of it.
+//
+// What it changes is a leaf whose height the template does not write: instead
+// of one em per character and 1.2 ems per line at ten points, its words are
+// measured at the size the template asks for with the advances of the face it
+// asks for. That decides how many LINES the leaf comes to, and a leaf one line
+// taller than it should be pushes every one of its siblings below it down by a
+// line — so the fonts reach the sheet a field lands on, and not only its own
+// box.
+//
+// A nil set is [Place].
+func PlaceWithFonts(form *Form, fonts *FontSet) *Layout {
+	l, _ := placeForm(form, fonts)
 	return l
 }
 
@@ -221,7 +246,7 @@ func Place(form *Form) *Layout {
 // [TestIntraLinePlacementProperties] has to know that before it can ask
 // anything about the line, and reading it off the coordinates would be asking
 // the answer to grade itself.
-func placeForm(form *Form) (*Layout, *placer) {
+func placeForm(form *Form, fonts *FontSet) (*Layout, *placer) {
 	l := &Layout{}
 	if form == nil {
 		return l, newPlacer()
@@ -248,6 +273,7 @@ func placeForm(form *Form) (*Layout, *placer) {
 		p.fired[breakKey{consumed, false}] = true
 	}
 	p.mapUp(form.Root)
+	p.fonts = fontSource{fonts: fonts, up: templateParents(form.Root.Template), root: form.Root.Template}
 	p.openArea(area, 0, true)
 	if len(contentAreas(area)) == 0 {
 		// pdf.js filters the page's children for the content area's div and
@@ -260,6 +286,28 @@ func placeForm(form *Form) (*Layout, *placer) {
 	p.rejectUnusedPages(root)
 	p.dropEmptyPages()
 	return l, p
+}
+
+// templateParents is each template element's parent, which is the chain an
+// unwritten <font> is inherited along (html_utils.js:232-241).
+//
+// It is a separate map from [placer.up] and not the same question: that one is
+// the LAYOUT parent, which skips a subformSet because its children belong to
+// the container above it. A font is inherited through a subformSet like
+// anything else, so this walks the elements as they are written.
+func templateParents(root *Node) map[*Node]*Node {
+	up := map[*Node]*Node{}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		for _, k := range n.Kids {
+			up[k] = n
+			walk(k)
+		}
+	}
+	if root != nil {
+		walk(root)
+	}
+	return up
 }
 
 // mapUp records each container's layout parent, which is where a row reads
@@ -355,6 +403,10 @@ type placer struct {
 	// [placer.widthOf] and [placer.linesOf].
 	widths map[heightKey]width
 	packs  map[heightKey]packing
+	// fonts is the font set the caller supplied and the template links a
+	// leaf's <font> is inherited along. Its zero value is no fonts, which is
+	// what [Place] passes.
+	fonts fontSource
 	// up is each container's layout parent, which is where a row reads the
 	// columnWidths it cuts its cells from. It follows the same rule as
 	// [contained]: a subformSet is not a parent, its children belong to the

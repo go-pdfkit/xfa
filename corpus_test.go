@@ -1196,7 +1196,7 @@ func TestIntraLinePlacementProperties(t *testing.T) {
 		}
 		stem := strings.TrimSuffix(name, ".template.xml")
 		f := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
-		l, p := placeForm(f)
+		l, p := placeForm(f, nil)
 
 		conts := map[*FormNode]bool{}
 		for k, pk := range p.packs {
@@ -1716,7 +1716,7 @@ func TestIntraLineAgainstPdfium(t *testing.T) {
 		}
 		stem := strings.TrimSuffix(name, ".template.xml")
 		f := Expand(tmpl, readNode(t, stem+".datasets.xml", false))
-		l, _ := placeForm(f)
+		l, _ := placeForm(f, nil)
 		forms++
 
 		// Which line-forming container each element sits under, if any. It is

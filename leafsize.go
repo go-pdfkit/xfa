@@ -72,28 +72,75 @@ type leafSize struct {
 	hasW, hasH bool
 }
 
-// paraOf is the paragraph margin a leaf's own <para> asks for. pdf.js reads
-// spaceAbove and spaceBelow into the outermost FontInfo of the measurement
-// (html_utils.js:222-229), where nothing but a <p> of a rich text ever reads
-// them again.
-func paraOf(n *Node) (paraMargin, string) {
+// paraOf is what a leaf's own <para> says that a measurement reads: the margin
+// above and below it, and the line height it asks for.
+//
+// pdf.js reads all three into the outermost FontInfo of the measurement
+// (html_utils.js:218-229). The two margins are read again by nothing but a <p>
+// of a rich text; the line height overrides the FACE's on every run, and so is
+// read by nothing at all where there are no fonts.
+func paraOf(n *Node) (paraMargin, Measure, string) {
 	m := paraMargin{hasTop: true, hasBottom: true}
 	para := n.Child("para")
 	if para == nil {
-		return m, ""
+		return m, 0, ""
 	}
 	above, _, err := para.Measure("spaceAbove")
 	if err != nil {
-		return m, "its paragraph is written as spaceAbove=" + quoted(para.Get("spaceAbove")) +
+		return m, 0, "its paragraph is written as spaceAbove=" + quoted(para.Get("spaceAbove")) +
 			", which is not a length"
 	}
 	below, _, err := para.Measure("spaceBelow")
 	if err != nil {
-		return m, "its paragraph is written as spaceBelow=" + quoted(para.Get("spaceBelow")) +
+		return m, 0, "its paragraph is written as spaceBelow=" + quoted(para.Get("spaceBelow")) +
+			", which is not a length"
+	}
+	lineHeight, _, err := para.Measure("lineHeight")
+	if err != nil {
+		return m, 0, "its paragraph is written as lineHeight=" + quoted(para.Get("lineHeight")) +
 			", which is not a length"
 	}
 	m.top, m.bottom = above, below
-	return m, ""
+	return m, lineHeight, ""
+}
+
+// A fontSource is everything a measurement needs to resolve a leaf's font: the
+// set of fonts the caller supplied, and the template's parent links, which is
+// how a leaf that writes no <font> gets one.
+//
+// The zero value is what [Place] measures with — no fonts and no links — and
+// answers nil for every leaf, which is the regime described at the top of
+// text.go.
+type fontSource struct {
+	fonts *FontSet
+	// up is each template element's parent, and root the <template> element
+	// the walk stops at. See [fontSource.fontOf].
+	up   map[*Node]*Node
+	root *Node
+}
+
+// fontOf is the <font> a leaf is measured with: its own, or the nearest one
+// above it in the TEMPLATE.
+//
+// pdf.js walks the parents until it reaches the template root and takes the
+// first that writes one (html_utils.js:232-241). The walk is over the template
+// and not over the expanded form because a font is a property of the element
+// rather than of the occurrence: every copy of a repeated row inherits the same
+// one, and doing it here rather than per occurrence is also why it costs
+// nothing.
+//
+// It answers nil where nothing up the chain writes one, which is a leaf pdf.js
+// measures with its default font.
+func (fs fontSource) fontOf(n *Node) *xfaFont {
+	if f := templateFont(n); f != nil {
+		return f
+	}
+	for p := fs.up[n]; p != nil && p != fs.root; p = fs.up[p] {
+		if f := templateFont(p); f != nil {
+			return f
+		}
+	}
+	return nil
 }
 
 // textBox is layoutNode's answer for a node holding a string.
@@ -108,7 +155,7 @@ func paraOf(n *Node) (paraMargin, string) {
 //
 // ok is false when there is nothing to measure; why is set when there is
 // something and it cannot be measured.
-func textBox(c content, para paraMargin, in insets, own, wide Measure) (w, h Measure, ok bool, why string) {
+func (fs fontSource) textBox(c content, t text, in insets, own, wide Measure) (w, h Measure, ok bool, why string) {
 	if c.empty() {
 		return 0, 0, false, ""
 	}
@@ -119,10 +166,31 @@ func textBox(c content, para paraMargin, in insets, own, wide Measure) (w, h Mea
 	if math.IsInf(float64(maxWidth), -1) {
 		return 0, 0, false, noWidthToBreakAt
 	}
-	t := newTextMeasure(para)
-	c.push(t)
-	w, h, _ = t.compute(maxWidth - in.horizontal())
+	m := newTextMeasure(fs.fonts, t.font, t.para, t.lineHeight)
+	c.push(m)
+	w, h, _ = m.compute(maxWidth - in.horizontal())
 	return w + in.horizontal(), h + in.vertical(), true, ""
+}
+
+// A text is everything about a node that decides how its words come out, other
+// than the words: the font it is set in, the paragraph margins its rich text
+// may charge to the height, and the line height its <para> asks for. It travels
+// together because pdf.js resolves all three in one place before it measures
+// anything (html_utils.js:218-241).
+type text struct {
+	font       *xfaFont
+	para       paraMargin
+	lineHeight Measure
+}
+
+// textOf resolves the three, in the order layoutNode does, and says why where
+// one of them is written as something that is not a length.
+func (fs fontSource) textOf(n *Node) (text, string) {
+	para, lineHeight, why := paraOf(n)
+	if why != "" {
+		return text{}, why
+	}
+	return text{font: fs.fontOf(n), para: para, lineHeight: lineHeight}, ""
 }
 
 // unmeasured is how tall — or how wide — a leaf is where neither the template
@@ -171,9 +239,9 @@ func (p *placer) leafSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 		// BEFORE its text is measured: fixDimensions runs at template.js:1901
 		// and layoutNode at :1908. A field's runs after, which is why colW is
 		// carried separately rather than folded into wide.
-		return drawSize(n, wide, colW)
+		return p.fonts.drawSize(n, wide, colW)
 	}
-	return fieldSize(n, wide)
+	return p.fonts.fieldSize(n, wide)
 }
 
 // drawSize is Draw[$toHTML]'s size (template.js:1894-1925): the text, and
@@ -183,7 +251,7 @@ func (p *placer) leafSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 // min-height and max-height (setMinMaxDimensions, html_utils.js:178-193) and
 // they never reach the number it reports to the container above, which is the
 // bbox it returns.
-func drawSize(n *FormNode, wide, colW Measure) (leafSize, string) {
+func (fs fontSource) drawSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 	in, ok := marginOf(n.Template)
 	if !ok {
 		return leafSize{}, marginNotLengths
@@ -202,11 +270,11 @@ func drawSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 	if !has {
 		return leafSize{}, ""
 	}
-	para, why := paraOf(n.Template)
+	t, why := fs.textOf(n.Template)
 	if why != "" {
 		return leafSize{}, why
 	}
-	w, h, measured, why := textBox(c, para, in, own, wide)
+	w, h, measured, why := fs.textBox(c, t, in, own, wide)
 	if why != "" {
 		return leafSize{}, why
 	}
@@ -219,16 +287,16 @@ func drawSize(n *FormNode, wide, colW Measure) (leafSize, string) {
 // fieldSize is Field[$toHTML]'s size (template.js:2796-2872): the widget, the
 // border its <ui> writes around the widget, and the caption, added up the way
 // the caption's placement says, and then held between minW/minH and maxW/maxH.
-func fieldSize(n *FormNode, wide Measure) (leafSize, string) {
+func (fs fontSource) fieldSize(n *FormNode, wide Measure) (leafSize, string) {
 	in, ok := marginOf(n.Template)
 	if !ok {
 		return leafSize{}, marginNotLengths
 	}
-	uiW, uiH, why := widgetSize(n, in, wide)
+	uiW, uiH, why := fs.widgetSize(n, in, wide)
 	if why != "" {
 		return leafSize{}, why
 	}
-	width, height, why := captioned(n, uiW, uiH, wide)
+	width, height, why := fs.captioned(n, uiW, uiH, wide)
 	if why != "" {
 		return leafSize{}, why
 	}
@@ -256,7 +324,7 @@ func fieldSize(n *FormNode, wide Measure) (leafSize, string) {
 
 // widgetSize is how big the thing a field is edited with comes out, with the
 // border its <ui> writes around it.
-func widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string) {
+func (fs fontSource) widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string) {
 	widget := uiWidget(n.Template.Child("ui"))
 	if widget != nil && widget.Kind == "checkButton" {
 		size, ok, err := widget.Measure("size")
@@ -277,13 +345,13 @@ func widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string)
 		if err != nil {
 			return 0, 0, widthNotALength(n.Template)
 		}
-		para, why := paraOf(n.Template)
+		t, why := fs.textOf(n.Template)
 		if why != "" {
 			return 0, 0, why
 		}
 		measured := false
 		if has {
-			w, h, measured, why = textBox(c, para, in, own, wide)
+			w, h, measured, why = fs.textBox(c, t, in, own, wide)
 			if why != "" {
 				return 0, 0, why
 			}
@@ -318,7 +386,7 @@ func widgetSize(n *FormNode, in insets, wide Measure) (w, h Measure, why string)
 // :2838-2839) and only the dimension the placement then adds the widget's back
 // into survives. This carries that by starting an unmeasured caption at
 // nought, which is what adding to null does in JavaScript.
-func captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why string) {
+func (fs fontSource) captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why string) {
 	capt := n.Template.Child("caption")
 	if capt == nil {
 		return uiW, uiH, ""
@@ -331,7 +399,7 @@ func captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why 
 	if !readable {
 		return 0, 0, notMeasurable
 	}
-	para, why := paraOf(capt)
+	t, why := fs.textOf(capt)
 	if why != "" {
 		return 0, 0, why
 	}
@@ -352,7 +420,7 @@ func captioned(n *FormNode, uiW, uiH, wide Measure) (width, height Measure, why 
 	// A caption has no w of its own — the class does not carry one
 	// (template.js:1144-1169) — so `node.w || availableSpace.width` is always
 	// the room it has.
-	width, height, _, why = textBox(c, para, in, 0, space)
+	width, height, _, why = fs.textBox(c, t, in, 0, space)
 	if why != "" {
 		return 0, 0, why
 	}
