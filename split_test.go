@@ -218,6 +218,8 @@ func TestIntactFollowsWhatTheContainerAboveSays(t *testing.T) {
 		{"G", "none"},        // a written keep wins outright
 		{"K", "contentArea"}, // and so does one that keeps it together
 		{"T", "none"},        // a tb subform with no keep
+		{"P", "contentArea"}, // a POSITIONED subform with no keep: pdfium's default
+		{"R", "contentArea"}, // and a row, which pdfium reads the same way
 		{"f", "none"},        // the root, likewise
 		{"E", "contentArea"}, // a draw, always
 		{"X", "none"},        // anything else pdfium's switch does not name
