@@ -115,9 +115,13 @@ func styleFont(style string) (f xfaFont, m paraMargin, lineHeight Measure) {
 // dropped too, whether or not it is one.
 func stripQuotes(s string) string {
 	if len(s) > 0 && (s[0] == '\'' || s[0] == '"') {
-		// slice(1, -1) on a string of one character is the empty string
-		// rather than an error, which is the one place the two languages
-		// would part.
+		if len(s) < 2 {
+			// slice(1, -1) on a string of one character is the empty string
+			// in JavaScript and a panic in Go, which is the one place the two
+			// languages part. A style of a single quote is not a font family
+			// and never was; it is here because a panic is not a reading.
+			return ""
+		}
 		return s[1 : len(s)-1]
 	}
 	return s
@@ -164,45 +168,82 @@ func paraOfStyle(style string) paraMargin {
 	return m
 }
 
-// styleMeasure reads a length written in a CSS style rather than in an XFA
-// attribute, and they are not the same language.
+// styleMeasure reads a length written in a CSS style, which is
+// [getMeasurement] with nought for a value it cannot read at all.
+func styleMeasure(s string) Measure { return getMeasurement(s, 0) }
+
+// getMeasurement reads a length the way pdf.js reads every one of them
+// (utils.js:78-102), and it is not the same language as [ParseMeasure].
 //
-// This is pdf.js's getMeasurement (utils.js:78-103) and it differs from
-// [ParseMeasure] in three ways, each of them right for a style and wrong for
-// an attribute: "px" IS a unit here, because a style is CSS and CSS has one; a
-// unit it does not know is dropped and the number kept; and anything it cannot
-// read at all is nought rather than an error, because a style pdf.js cannot
-// parse does not stop it laying the form out.
-func styleMeasure(s string) Measure {
-	s = strings.TrimSpace(s)
-	// The pattern is /([+-]?\d+\.?\d*)(.*)/: a number at the START, and
-	// whatever follows is the unit.
-	i := 0
-	if i < len(s) && (s[i] == '+' || s[i] == '-') {
-		i++
+// It differs in four ways, each of them right for the reference and wrong for
+// an XFA attribute read strictly: "px" IS a unit here, because pdf.js's table
+// has one; a unit it does not know is DROPPED and the number kept, which is
+// what makes letterSpacing="-0.002em" a length of -0.002 rather than an error;
+// the pattern is unanchored, so a number is found wherever it first appears
+// and "=0mm" is nought; and a string holding no number at all is the default
+// rather than a refusal.
+//
+// This package reads x, y, w and h strictly, following pdfium, and reports the
+// element rather than drawing it a third of its width out. It reads a FONT's
+// two lengths leniently, following pdf.js, because a size or a letter spacing
+// nobody can read does not stop pdfium laying the form out either — and
+// because the corpus writes one: 24 draws of ca-cra__t1206 and t1207 set
+// letterSpacing in "em", a unit relative to the very size being resolved.
+// Refusing those cost four forms their whole table.
+func getMeasurement(s string, def Measure) Measure {
+	value, unit, ok := firstNumber(strings.TrimSpace(s))
+	if !ok {
+		return def
 	}
-	digits := i
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		i++
-	}
-	if i == digits {
+	if value == 0 {
+		// pdf.js returns before it looks the unit up (utils.js:93-95), so
+		// nought in a unit it does not know is still nought.
 		return 0
 	}
-	if i < len(s) && s[i] == '.' {
-		i++
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
+	if per, known := styleUnit[unit]; known {
+		return Measure(value * per)
+	}
+	return Measure(value)
+}
+
+// firstNumber is /([+-]?\d+\.?\d*)(.*)/ applied to a string: the first number
+// in it, whatever follows that number, and whether there was one.
+//
+// The pattern is unanchored, so it is a scan rather than a parse of the head.
+// A sign counts only where a digit follows it, because the engine backtracks
+// over an optional group rather than failing on it.
+func firstNumber(s string) (value float64, unit string, ok bool) {
+	for i := 0; i < len(s); i++ {
+		j := i
+		if s[j] == '+' || s[j] == '-' {
+			j++
 		}
+		if j >= len(s) || s[j] < '0' || s[j] > '9' {
+			continue
+		}
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		if j < len(s) && s[j] == '.' {
+			j++
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+		}
+		v, err := strconv.ParseFloat(s[i:j], 64)
+		if err != nil {
+			// A run of digits too long to be a float64. parseFloat answers
+			// Infinity there and pdf.js carries it; this treats it as no
+			// number, which is the only place the two part and which no
+			// template reaches.
+			return 0, "", false
+		}
+		// The unit is whatever follows, NOT trimmed: pdf.js trims the whole
+		// string once and then looks the rest up as it stands, so "8 pt" is
+		// eight of no unit at all.
+		return v, s[j:], true
 	}
-	v, err := strconv.ParseFloat(s[:i], 64)
-	if err != nil || v == 0 {
-		return 0
-	}
-	per, known := styleUnit[strings.TrimSpace(s[i:])]
-	if !known {
-		return Measure(v)
-	}
-	return Measure(v * per)
+	return 0, "", false
 }
 
 // styleUnit is pdf.js's dimConverters (utils.js:19-25). A CSS pixel is one

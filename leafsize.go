@@ -131,18 +131,16 @@ type fontSource struct {
 //
 // It answers nil where nothing up the chain writes one, which is a leaf pdf.js
 // measures with its default font.
-func (fs fontSource) fontOf(n *Node) (*xfaFont, string) {
-	f, why := templateFont(n)
-	if why != "" || f != nil {
-		return f, why
+func (fs fontSource) fontOf(n *Node) *xfaFont {
+	if f := templateFont(n); f != nil {
+		return f
 	}
 	for p := fs.up[n]; p != nil && p != fs.root; p = fs.up[p] {
-		f, why := templateFont(p)
-		if why != "" || f != nil {
-			return f, why
+		if f := templateFont(p); f != nil {
+			return f
 		}
 	}
-	return nil, ""
+	return nil
 }
 
 // textBox is layoutNode's answer for a node holding a string.
@@ -192,11 +190,7 @@ func (fs fontSource) textOf(n *Node) (text, string) {
 	if why != "" {
 		return text{}, why
 	}
-	f, why := fs.fontOf(n)
-	if why != "" {
-		return text{}, why
-	}
-	return text{font: f, para: para, lineHeight: lineHeight}, ""
+	return text{font: fs.fontOf(n), para: para, lineHeight: lineHeight}, ""
 }
 
 // unmeasured is how tall — or how wide — a leaf is where neither the template

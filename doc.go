@@ -81,15 +81,39 @@
 // leaves upwards.
 //
 // A leaf's own height is often not written either, and then it is its TEXT:
-// broken into lines at the width it has, a line count times a line height. See
-// the note on emWidth in text.go for the regime that is measured in, which is
-// pdf.js's own where it resolves no font — one em per character, a first line
-// one em tall and every line after it 1.2 ems. That is not a stand-in for
-// something better: it is what the reference runs on a form whose fonts it
-// cannot resolve, so its numbers and these are the same numbers. Where the
-// text is the XHTML of a rich value it is walked in the order the markup
-// writes it, since half of the corpus's paragraphs hold text both before and
-// after a span.
+// broken into lines at the width it has, a line count times a line height.
+// Where the text is the XHTML of a rich value it is walked in the order the
+// markup writes it, since half of the corpus's paragraphs hold text both
+// before and after a span.
+//
+// # The fonts are the caller's
+//
+// A template names typefaces and carries none; the PDF it travelled in carries
+// them, and this package reads neither. So the font set is an argument.
+// [PlaceWithFonts] takes one, [FontSet] is how a caller builds it out of
+// [Face] implementations of its own, and [FontSet.find] is pdf.js's own fuzzy
+// lookup from the name a template writes to a family the caller supplied. No
+// font file is read here and none should be: glyph advances and vertical
+// metrics belong to a font parser, and go-opentype/opentype has both.
+//
+// [Place] passes none, and that is a regime of the reference's rather than a
+// shortfall: pdf.js measures a form whose fonts it cannot resolve at one em
+// per character, a first line one em tall and every line after it 1.2 ems, at
+// ten points whatever the template asks for — because the size written beside
+// a typeface nobody has is discarded along with it. Its numbers and these are
+// the same numbers. See the note at the top of text.go.
+//
+// How much it decides, measured over the 559 forms pdfium lays out, with the
+// 7 358 leaves whose height comes from their text and which pair unambiguously
+// with pdfium's. The unit is a LINE, because pdfium measures with its own font
+// files and no implementation reproduces another's advances in points:
+//
+//	                          no fonts   with fifteen families off one machine
+//	same line count as pdfium    25.9%   82.5%
+//	one line too many            26.0%    6.9%
+//	two or more too many         38.4%    0.1%
+//	body leaves off the paper     1000      10, of which 9 pdfium puts off too
+//	agreeing on sheet+y         91.29%   92.64%
 //
 // Where the stack runs off the bottom, the page turns. Which page comes next
 // is a state machine rather than "another of the same" — the page set's

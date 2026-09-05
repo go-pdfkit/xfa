@@ -107,13 +107,17 @@ var defaultXfaFont = xfaFont{
 // typeface "Courier", size ten points, posture and weight normal, letter
 // spacing nought.
 //
-// A length that is not one stops the measurement rather than counting as
-// nought, the way every other length in this package does: a leaf measured at
-// a size nobody can read would be reported as placed and be wrong.
-func templateFont(n *Node) (*xfaFont, string) {
+// The two lengths are read LENIENTLY, by [getMeasurement], and not by this
+// package's strict [ParseMeasure]. That is a deliberate exception and the
+// corpus forced it: 24 draws of ca-cra__t1206 and t1207 write
+// letterSpacing="-0.002em", a unit relative to the size being resolved, and
+// pdf.js drops the unit and keeps the number. Refusing it would leave four
+// forms with no table at all, over a quantity that moves a glyph by two
+// thousandths of a point.
+func templateFont(n *Node) *xfaFont {
 	f := n.Child("font")
 	if f == nil {
-		return nil, ""
+		return nil
 	}
 	out := defaultXfaFont
 	if t := f.Get("typeface"); t != "" {
@@ -127,19 +131,9 @@ func templateFont(n *Node) (*xfaFont, string) {
 	if w := f.Get("weight"); w == "bold" {
 		out.weight = w
 	}
-	if size, written, err := f.Measure("size"); err != nil {
-		return nil, "its font is written as size=" + quoted(f.Get("size")) +
-			", which is not a length"
-	} else if written {
-		out.size = size
-	}
-	if ls, written, err := f.Measure("letterSpacing"); err != nil {
-		return nil, "its font is written as letterSpacing=" + quoted(f.Get("letterSpacing")) +
-			", which is not a length"
-	} else if written {
-		out.letterSpacing = ls
-	}
-	return &out, ""
+	out.size = getMeasurement(f.Get("size"), defaultSize)
+	out.letterSpacing = getMeasurement(f.Get("letterSpacing"), 0)
+	return &out
 }
 
 // A fontInfo is one level of the measurement's font stack: the face its text is

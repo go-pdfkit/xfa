@@ -115,7 +115,7 @@ type Typeface struct {
 //
 // The zero value is not usable; see [NewFontSet]. A nil *FontSet is, and is
 // what [Place] measures with: it finds nothing, so every leaf falls to the
-// regime described at [emWidth].
+// regime described at [defaultSize].
 type FontSet struct {
 	// order is the family names in the order they were added, and byFamily
 	// their entries.
