@@ -328,7 +328,7 @@ func (p *placer) whole(kid *FormNode, lv *level, lay string) bool {
 	// refusal: it comes out one per sheet, overflowing, exactly as pdf.js
 	// draws it.
 	for !p.free && !fits(p.y+h, lv.bottom) {
-		if !p.advance(nil) {
+		if !p.advance(p.overflowTo(kid)) {
 			p.blocked = noNextPage
 			p.rejectAll(kid, noNextPage)
 			return false
@@ -658,7 +658,7 @@ func (p *placer) flowLines(n *FormNode) {
 		}
 		if b.line != line {
 			line = b.line
-			if !p.turnTo(b, fl) {
+			if !p.turnTo(kid, b, fl) {
 				p.rejectKids(kids[i:], p.blocked)
 				return
 			}
@@ -728,11 +728,11 @@ func (p *placer) flowLines(n *FormNode) {
 // and gains none, and i-956h is one of the 77 forms pdf.js cannot lay out at
 // all, so no judge can say which of the two is right there. The stricter test
 // is the one that puts them on paper.
-func (p *placer) turnTo(b lineBox, fl fill) bool {
+func (p *placer) turnTo(kid *FormNode, b lineBox, fl fill) bool {
 	lv := p.chain[len(p.chain)-1]
 	for !p.free && !fits(lv.top+b.y-lv.skip+fl.high[b.line], lv.bottom) {
 		wide := lv.wide
-		if !p.advance(nil) {
+		if !p.advance(p.overflowTo(kid)) {
 			p.blocked = noNextPage
 			return false
 		}
@@ -758,4 +758,114 @@ func (p *placer) turnTo(b lineBox, fl fill) bool {
 func alone(fl fill, i int) bool {
 	b := fl.boxes[i]
 	return b.inLine == 0 && (i+1 == len(fl.boxes) || fl.boxes[i+1].line != b.line)
+}
+
+// overflowNode is the <overflow> in scope on one container, which is pdfium's
+// QueryOverflow (cxfa_viewlayoutprocessor.cpp:1881-1905): its DIRECT children
+// are read in order, and the first <overflow> is the answer, as is the first
+// <break> carrying any of overflowLeader, overflowTarget or overflowTrailer.
+//
+// A <break> carrying NONE of the three answers nothing at all, and stops the
+// scan — pdfium returns nullptr there rather than going on to a later sibling.
+// That is kept because it is the same shape as the rule below: what a
+// container writes is what applies to it, whether or not it says anything.
+func overflowNode(n *FormNode) *Node {
+	for _, k := range n.Template.Kids {
+		switch k.Kind {
+		case "break":
+			if k.Get("overflowLeader") == "" && k.Get("overflowTarget") == "" &&
+				k.Get("overflowTrailer") == "" {
+				return nil
+			}
+			return k
+		case "overflow":
+			return k
+		}
+	}
+	return nil
+}
+
+// overflowTo is where an <overflow target> sends the flow when what is being
+// placed does not fit, or nil where nothing does.
+//
+// # What fires it
+//
+// A child that FAILED TO FIT in what was left of the content area, and nothing
+// else. pdfium reaches ProcessOverflow(.., bCreatePage=true) from four places
+// (cxfa_contentlayoutprocessor.cpp:2714, 2763, 2793, 2818) and every one of
+// them is in the tail of InsertFlowedItem, past the branch that takes a child
+// which fits (:2611-2654). pdf.js says the same thing in one line: a subform
+// records templateRoot[$extra].overflowNode only when its own layout attempt
+// failed (template.js:5180-5183).
+//
+// So this is asked at the two places the flow gives up on the room it has —
+// [placer.whole] and [placer.turnTo] — and at no other. A break that turns the
+// page of its own accord does not consult it, because nothing failed.
+//
+// # WHICH overflow applies, which is the part that is easy to get wrong
+//
+// The innermost container that writes an <overflow> AT ALL, beginning with the
+// element being placed. Not the innermost that writes a TARGET: an <overflow>
+// without one SHADOWS an outer one that has one, and does nothing itself.
+//
+// pdfium arrives at that by passing the flowing container's own overflow down
+// as Context::overflow_node_ and letting each container overwrite it on the way
+// (:2529-2537, read back at :2570-2575) — so the nearest one wins whatever it
+// says.
+//
+// The corpus makes this a measurement rather than a reading. Of its 560
+// templates only five carry an <overflow target>, and two of those three that
+// pdfium lays out differently from this package spell the shadowing out:
+// us-uscis__i-956 writes <overflow target="Page3"> on P1 and a TARGETLESS
+// <overflow leader="..."> on ten of P1's children, and pdfium opens Page3
+// exactly once, for sfPart13 — the one child of P1 that fails to fit and
+// writes no overflow of its own. A version that took the innermost TARGET
+// instead fired on all ten and came out at 12 sheets where pdfium has 17.
+//
+// # What it does
+//
+// pdfium runs it as an ordinary break with startNew hard-coded true
+// (BreakOverflow, cxfa_viewlayoutprocessor.cpp:1091-1170), which is why an
+// overflow to the page area already in hand STILL turns the sheet. It is run
+// as one here, through [pager.fire], so the two arms — a page area target and
+// a content area target — are the ones already measured for <breakBefore>.
+//
+// An unresolved target does nothing: pdfium's switch has no case for a target
+// that is neither a page area nor a content area, and does not fall back to
+// the page in hand the way a targetless breakBefore does.
+func (p *placer) overflowTo(kid *FormNode) *breakTo {
+	o := overflowNode(kid)
+	for i := len(p.chain) - 1; o == nil && i >= 0; i-- {
+		o = overflowNode(p.chain[i].node)
+	}
+	if o == nil {
+		return nil
+	}
+	target := o.Get("target")
+	if o.Kind == "break" {
+		target = o.Get("overflowTarget")
+	}
+	if target == "" {
+		return nil
+	}
+	area, idx := p.pager.resolve(p.root, target)
+	if area == nil {
+		return nil
+	}
+	kind := "contentArea"
+	if idx < 0 {
+		if area.Kind != "pageArea" {
+			return nil
+		}
+		kind = "pageArea"
+	}
+	// [pager.fire] cannot refuse a break whose target has already resolved and
+	// whose startNew is set — both of its arms answer true for one — so its
+	// second result says nothing here. The three refusals above are pdfium's
+	// own, made before it rather than left to it: its switch has no case for a
+	// target that is neither a page area nor a content area, and unlike a
+	// targetless <breakBefore> it does NOT fall back to the page in hand.
+	to, _ := p.pager.fire(p.root,
+		breakSpec{targetType: kind, target: target, startNew: true}, p.pageArea, p.slot)
+	return &to
 }

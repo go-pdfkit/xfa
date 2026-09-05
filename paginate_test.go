@@ -527,3 +527,143 @@ func TestABreakAfterAContainerTheTemplateHidesDoesNotTurnItEither(t *testing.T) 
 		t.Errorf("%d sheets, want 1", len(l.Pages))
 	}
 }
+
+// The <overflow target> tests. Each writes a draw into the page area it
+// expects, so the sheet a box lands on says which page area was opened.
+
+func TestAnOverflowTargetOpensThePageAreaItNames(t *testing.T) {
+	// The stack overflows its content area twice. Without the <overflow> both
+	// turns would stay on P1; with it they go to P2, which is where the
+	// container being flowed says its continuation belongs.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="tb"><overflow target="P2"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.A2 0,0 1x10", "1: draw f.S.A3 0,10 1x10"})
+}
+
+func TestAnOverflowWithoutATargetShadowsTheOneAboveIt(t *testing.T) {
+	// This is the rule the corpus turns on. us-uscis__i-956 writes
+	// <overflow target="Page3"> on P1 and a TARGETLESS <overflow leader="…">
+	// on ten of P1's children, and pdfium opens Page3 for none of those ten.
+	// The nearest <overflow> wins whether or not it says anything.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="tb"><overflow target="P2"/>
+	    <subform name="T" layout="tb"><overflow leader="Head"/>`+bricks(4, "10")+`</subform>
+	  </subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.T.A0 0,0 1x10", "0: draw f.S.T.A1 0,10 1x10",
+		"1: draw f.P1.One 0,0 1x1", "1: draw f.S.T.A2 0,0 1x10", "1: draw f.S.T.A3 0,10 1x10"})
+}
+
+func TestTheOverflowOnTheElementBeingPlacedIsTheOneThatApplies(t *testing.T) {
+	// pdfium asks QueryOverflow of the CHILD first and only then of the
+	// container flowing it (cxfa_contentlayoutprocessor.cpp:2570-2575), so a
+	// group that names its own continuation page beats the one above it.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`)+
+		sheet("P3", "", "25", `<draw name="Three" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="tb"><overflow target="P2"/>
+	    <draw name="A" w="1pt" h="20pt"/>
+	    <subform name="G" layout="tb"><overflow target="P3"/><keep intact="contentArea"/>
+	      <draw name="B" w="1pt" h="20pt"/></subform>
+	  </subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A 0,0 1x20",
+		"1: draw f.P3.Three 0,0 1x1", "1: draw f.S.G.B 0,0 1x20"})
+}
+
+func TestAnOverflowToThePageAreaInHandStillTurnsTheSheet(t *testing.T) {
+	// pdfium hard-codes bStartNew true in BreakOverflow
+	// (cxfa_viewlayoutprocessor.cpp:1113-1117), so ShouldGetNextPageArea
+	// passes even where the target IS the page area in hand. P1 holds two
+	// content areas and the overflow names P1, so the second one is skipped
+	// and a fresh sheet begun.
+	l := laidOut(t, `<template><subform name="f" layout="tb"><pageSet>`+
+		`<pageArea name="P1"><medium long="1000pt" short="1000pt"/>`+
+		`<draw name="One" w="1pt" h="1pt"/>`+
+		`<contentArea w="500pt" h="25pt"/><contentArea x="200pt" w="500pt" h="25pt"/></pageArea>`+
+		`</pageSet><subform name="S" layout="tb"><overflow target="P1"/>`+bricks(4, "10")+
+		`</subform></subform></template>`)
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P1.One 0,0 1x1", "1: draw f.S.A2 0,0 1x10", "1: draw f.S.A3 0,10 1x10"})
+}
+
+func TestABreakCarryingOverflowAttributesIsReadAsTheOverflow(t *testing.T) {
+	// QueryOverflow takes a <break> with any of overflowLeader,
+	// overflowTarget or overflowTrailer as the container's overflow
+	// (cxfa_viewlayoutprocessor.cpp:1884-1897), and BreakOverflow then reads
+	// its overflowTarget rather than a target (:1097-1101).
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="tb"><break overflowTarget="P2"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.A2 0,0 1x10", "1: draw f.S.A3 0,10 1x10"})
+}
+
+func TestABreakCarryingNoneOfThemAnswersNothingAtAll(t *testing.T) {
+	// pdfium returns nullptr on such a <break> rather than going on to a later
+	// sibling, so the <overflow> after it is never reached and the container
+	// above is not consulted either.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="tb"><break/><overflow target="P2"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P1.One 0,0 1x1", "1: draw f.S.A2 0,0 1x10", "1: draw f.S.A3 0,10 1x10"})
+}
+
+func TestAnOverflowTargetNothingAnswersDoesNothing(t *testing.T) {
+	// pdfium runs the break only where ResolveBreakTarget finds something
+	// (cxfa_viewlayoutprocessor.cpp:1142-1146), and its switch has a case only
+	// for a page area and a content area. Neither a name nothing answers nor a
+	// name answered by something else turns the page here — and unlike a
+	// targetless <breakBefore>, neither falls back to the page in hand.
+	one := `>` + sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)
+	want := []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P1.One 0,0 1x1", "1: draw f.S.A2 0,0 1x10", "1: draw f.S.A3 0,10 1x10"}
+
+	l := laidOut(t, sheets(one, `
+	  <subform name="S" layout="tb"><overflow target="Nowhere"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "a target nothing answers", byPage(l), want)
+
+	// "#body" is an id, and it is a subform's: resolved, and not a page area.
+	l = laidOut(t, sheets(one, `
+	  <subform name="S" id="body" layout="tb"><overflow target="#body"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "a target that is not a page area", byPage(l), want)
+}
+
+func TestAnOverflowMayNameAContentAreaRatherThanAPageArea(t *testing.T) {
+	// BreakOverflow's switch has a ContentArea case as well
+	// (cxfa_viewlayoutprocessor.cpp:1150-1153), still with startNew true. The
+	// target names the SECOND content area of P2, so the fresh sheet begins
+	// there rather than at its first.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		`<pageArea name="P2"><medium long="1000pt" short="1000pt"/>`+
+		`<draw name="Two" w="1pt" h="1pt"/>`+
+		`<contentArea name="C1" w="500pt" h="25pt"/>`+
+		`<contentArea name="C2" x="200pt" w="500pt" h="25pt"/></pageArea>`, `
+	  <subform name="S" layout="tb"><overflow target="P2.C2"/>`+bricks(4, "10")+`</subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 1x10", "0: draw f.S.A1 0,10 1x10",
+		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.A2 200,0 1x10", "1: draw f.S.A3 200,10 1x10"})
+}
+
+func TestAnOverflowTargetAppliesToALineThatDoesNotFitToo(t *testing.T) {
+	// The second seam. A wrapping container turns the page between two of its
+	// lines ([placer.turnTo]), and that is a container failing to fit just as
+	// much as a stacked child is.
+	l := laidOut(t, sheets(`>`+sheet("P1", "", "25", `<draw name="One" w="1pt" h="1pt"/>`)+
+		sheet("P2", "", "25", `<draw name="Two" w="1pt" h="1pt"/>`), `
+	  <subform name="S" layout="lr-tb"><overflow target="P2"/>
+	    <draw name="A0" w="400pt" h="10pt"/><draw name="A1" w="400pt" h="10pt"/>
+	    <draw name="A2" w="400pt" h="10pt"/></subform>`))
+	same(t, "the sheets", byPage(l), []string{
+		"0: draw f.P1.One 0,0 1x1", "0: draw f.S.A0 0,0 400x10", "0: draw f.S.A1 0,10 400x10",
+		"1: draw f.P2.Two 0,0 1x1", "1: draw f.S.A2 0,0 400x10"})
+}
